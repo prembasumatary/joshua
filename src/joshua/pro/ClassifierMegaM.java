@@ -1,28 +1,23 @@
 package joshua.pro;
 
-import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
-import java.io.FileReader;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.Vector;
 
 import joshua.util.StreamGobbler;
+import joshua.util.io.LineReader;
 
 // sparse feature representation version
 public class ClassifierMegaM implements ClassifierInterface {
   @Override
   public double[] runClassifier(Vector<String> samples, double[] initialLambda, int featDim) {
     double[] lambda = new double[featDim + 1];
-    // String root_dir =
-    // "/media/Data/JHU/Research/MT discriminative LM training/joshua_expbleu/PRO_test/";
-    // String root_dir = "/home/ycao/WS11/nist_zh_en_percep/pro_forward/pro_megam/";
     System.out.println("------- MegaM training starts ------");
 
     try {
       // prepare training file for MegaM
-      // PrintWriter prt = new PrintWriter(new FileOutputStream(root_dir+"megam_train.data"));
       PrintWriter prt = new PrintWriter(new FileOutputStream(trainingFilePath));
       String[] feat;
       String[] featInfo;
@@ -43,16 +38,12 @@ public class ClassifierMegaM implements ClassifierInterface {
           featInfo = feat[i].split(":");
           prt.print(featInfo[0] + " " + featInfo[1] + " ");
         }
-
         prt.println();
       }
       prt.close();
 
       // start running MegaM
       Runtime rt = Runtime.getRuntime();
-      // String cmd = "/home/yuan/tmp_megam_command";
-      // String cmd = "/home/ycao/WS11/nist_zh_en_percep/pro_forward/pro_megam/megam_command";
-
       Process p = rt.exec(commandFilePath);
 
       StreamGobbler errorGobbler = new StreamGobbler(p.getErrorStream(), 1);
@@ -68,9 +59,7 @@ public class ClassifierMegaM implements ClassifierInterface {
       }
 
       // read the weights
-      BufferedReader wt = new BufferedReader(new FileReader(weightFilePath));
-      String line;
-      while ((line = wt.readLine()) != null) {
+      for (String line: new LineReader(weightFilePath)) {
         String val[] = line.split("\\s+");
         lambda[Integer.parseInt(val[0])] = Double.parseDouble(val[1]);
       }

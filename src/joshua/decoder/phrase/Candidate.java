@@ -1,6 +1,13 @@
 package joshua.decoder.phrase;
 
+/*** 
+ * A candidate is basically a cube prune state. It contains a list of hypotheses and target
+ * phrases, and an instantiated candidate is a pair of indices that index these two lists. This
+ * is the "cube prune" position.
+ */
+
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 import joshua.corpus.Span;
@@ -12,7 +19,7 @@ import joshua.decoder.hypergraph.HGNode;
 public class Candidate implements Comparable<Candidate> {
 
   // the set of hypotheses that can be paired with phrases from this span 
-  private HypoStateList hypostates;
+  private List<Hypothesis> hypotheses;
 
   // the list of target phrases gathered from a span of the input
   private TargetPhrases phrases;
@@ -20,32 +27,71 @@ public class Candidate implements Comparable<Candidate> {
   // source span of new phrase
   public Span span;
   
+  // future cost of applying phrases to hypotheses
+  float future_delta;
+  
   // indices into the hypotheses and phrases arrays (used for cube pruning)
   private int[] ranks;
   
   // scoring and state information 
   private ComputeNodeResult result;
   
-  public String toString() {
-    return String.format("CAND[%d/%d hypotheses, %d/%d phrases] score=%.3f (base %.3f + future %.3f + trans %.3f) %s + %s", ranks[0],
-        hypostates.size(), ranks[1], phrases.size(), score(),
-        getHypothesis().Score(),
-        getFutureEstimate(),
-        result.getTransitionCost() , 
-        getHypothesis(), getRule().getEnglishWords());
+  /**
+   * When candidate objects are extended, the new one is initialized with the same underlying
+   * "phrases" and "hypotheses" and "span" objects. So these all have to be equal, as well as
+   * the ranks.
+   * 
+   * This is used to prevent cube pruning from adding the same candidate twice, having reached
+   * a point in the cube via different paths.
+   */
+  @Override
+  public boolean equals(Object obj) {
+    if (obj instanceof Candidate) {
+      Candidate other = (Candidate) obj;
+      if (hypotheses != other.hypotheses || phrases != other.phrases || span != other.span)
+        return false;
+      
+      if (ranks.length != other.ranks.length)
+        return false;
+      
+      for (int i = 0; i < ranks.length; i++)
+        if (ranks[i] != other.ranks[i])
+          return false;
+          
+      return true;
+    }
+    return false;
   }
   
-  public Candidate(HypoStateList hypotheses, TargetPhrases phrases, Span span) {
-    this.hypostates = hypotheses;
+  @Override
+  public int hashCode() {
+    return 17 * hypotheses.size() 
+        + 23 * phrases.size() 
+        + 57 * span.hashCode() 
+        + 117 * Arrays.hashCode(ranks);
+//    return hypotheses.hashCode() * phrases.hashCode() * span.hashCode() * Arrays.hashCode(ranks);
+  }
+  
+  @Override
+  public String toString() {
+    return String.format("CANDIDATE(hyp %d/%d, phr %d/%d) [%s] phrase=[%s] span=%s",
+        ranks[0], hypotheses.size(), ranks[1], phrases.size(),
+        getHypothesis(), getRule().getEnglishWords().replaceAll("\\[.*?\\] ",""), getSpan());
+  }
+  
+  public Candidate(List<Hypothesis> hypotheses, TargetPhrases phrases, Span span, float delta) {
+    this.hypotheses = hypotheses;
     this.phrases = phrases;
     this.span = span;
+    this.future_delta = delta;
     this.ranks = new int[] { 0, 0 };
   }
 
-  public Candidate(HypoStateList hypotheses, TargetPhrases phrases, Span span, int[] ranks) {
-    this.hypostates = hypotheses;
+  public Candidate(List<Hypothesis> hypotheses, TargetPhrases phrases, Span span, float delta, int[] ranks) {
+    this.hypotheses = hypotheses;
     this.phrases = phrases;
     this.span = span;
+    this.future_delta = delta;
     this.ranks = ranks;
 //    this.score = hypotheses.get(ranks[0]).score + phrases.get(ranks[1]).getEstimatedCost();
   }
@@ -66,8 +112,8 @@ public class Candidate implements Comparable<Candidate> {
    * @return the next candidate, or null if none
    */
   public Candidate extendHypothesis() {
-    if (ranks[0] < hypostates.size() - 1) {
-      return new Candidate(hypostates, phrases, span, new int[] { ranks[0] + 1, ranks[1] });
+    if (ranks[0] < hypotheses.size() - 1) {
+      return new Candidate(hypotheses, phrases, span, future_delta, new int[] { ranks[0] + 1, ranks[1] });
     }
     return null;
   }
@@ -79,7 +125,7 @@ public class Candidate implements Comparable<Candidate> {
    */
   public Candidate extendPhrase() {
     if (ranks[1] < phrases.size() - 1) {
-      return new Candidate(hypostates, phrases, span, new int[] { ranks[0], ranks[1] + 1 });
+      return new Candidate(hypotheses, phrases, span, future_delta, new int[] { ranks[0], ranks[1] + 1 });
     }
     
     return null;
@@ -90,20 +136,31 @@ public class Candidate implements Comparable<Candidate> {
     return Float.compare(other.score(), score());
   }
 
+  /**
+   * Returns the input span from which the phrases for this candidates were gathered.
+   * 
+   * @return the span object
+   */
   public Span getSpan() {
     return this.span;
   }
   
+  /**
+   * A candidate is a (hypothesis, target phrase) pairing. The hypothesis and target phrase are
+   * drawn from a list that is indexed by (ranks[0], ranks[1]), respectively. This is a shortcut
+   * to return the hypothesis of the candidate pair.
+   * 
+   * @return the hypothesis at position ranks[0]
+   */
   public Hypothesis getHypothesis() {
-    return this.hypostates.get(ranks[0]).history;
+    return this.hypotheses.get(ranks[0]);
   }
   
   /**
-   * It is sometimes useful to think of a phrase pair like a syntax-based rule. This function returns
-   * a Rule view of the candidate by returning the Phrase (which extends Rule) marked by the currently
-   * selected rank.
+   * This returns the target side {@link Phrase}, which is a {@link Rule} object. This is just a
+   * convenience function that works by returning the phrase indexed in ranks[1].
    * 
-   * @return
+   * @return the phrase at position ranks[1]
    */
   public Rule getRule() {
     return phrases.get(ranks[1]);
@@ -121,10 +178,22 @@ public class Candidate implements Comparable<Candidate> {
     return tailNodes;
   }
   
+  /**
+   * Returns the bit vector of this hypothesis. The bit vector is computed by ORing the coverage
+   * vector of the tail node (hypothesis) and the source span of phrases in this candidate.
+   * @return
+   */
   public Coverage getCoverage() {
-    return getHypothesis().GetCoverage().or(getSpan());
+    Coverage cov = new Coverage(getHypothesis().getCoverage());
+    cov.set(getSpan());
+    return cov;
   }
 
+  /**
+   * Sets the result of a candidate (should just be moved to the constructor).
+   * 
+   * @param result
+   */
   public void setResult(ComputeNodeResult result) {
     this.result = result;
   }
@@ -142,13 +211,11 @@ public class Candidate implements Comparable<Candidate> {
    * @return
    */
   public float score() {
-    if (result != null)
-      return this.hypostates.get(ranks[0]).score() + result.getTransitionCost();
-    return 0.0f;
+    return getHypothesis().getScore() + future_delta + result.getTransitionCost();
   }
   
   public float getFutureEstimate() {
-    return this.hypostates.get(ranks[0]).future();
+    return getHypothesis().getScore() + future_delta;
   }
   
   public List<DPState> getStates() {

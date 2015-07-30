@@ -44,6 +44,8 @@ public class CompareGrammars {
 
       set.add(fields[fieldNumber]);
     }
+    
+    grammarScanner.close();
 
     return set;
   }
@@ -92,7 +94,10 @@ public class CompareGrammars {
         throw new RuntimeException("Lines don't match: " + line1 + " and " + line2);
       }
     }
-
+    
+    grammarScanner1.close();
+    grammarScanner2.close();
+    
     if (set.isEmpty()) {
       logger.info("No score mismatches");
     } else {
@@ -100,7 +105,6 @@ public class CompareGrammars {
       logger.warning("Total mismatch logProb mass: " + totalOverDiffs + " (" + totalOverDiffs
           / set.size() + ") (" + totalOverDiffs / counter + ")");
     }
-
   }
 
   /**

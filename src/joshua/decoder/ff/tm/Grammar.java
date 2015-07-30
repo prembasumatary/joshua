@@ -69,9 +69,15 @@ public interface Grammar {
    * This is used to construct a manual rule supported from outside the grammar, but the owner
    * should be the same as the grammar. Rule ID will the same as OOVRuleId, and no lattice cost
    */
-  Rule constructManualRule(int lhs, int[] sourceWords, int[] targetWords, float[] scores,
-      int aritity);
+  @Deprecated
+  Rule constructManualRule(int lhs, int[] sourceWords, int[] targetWords, float[] scores, int arity);
 
+  /**
+   * Dump the grammar to disk.
+   * 
+   * @param file
+   */
+  @Deprecated
   void writeGrammarOnDisk(String file);
 
   /**
@@ -81,6 +87,22 @@ public interface Grammar {
    * @return true if the grammar's rules may contain regular expressions.
    */
   boolean isRegexpGrammar();
-    
+
+  /**
+   * Return the grammar's owner.
+   */
+  int getOwner();
+
+  /**
+   * Return the maximum source phrase length (terminals + nonterminals).
+   */
+  int getMaxSourcePhraseLength();
+  
+  /**
+   * Add an OOV rule for the requested word for the grammar.
+   * 
+   * @param word
+   * @param featureFunctions
+   */
   void addOOVRules(int word, List<FeatureFunction> featureFunctions);
 }

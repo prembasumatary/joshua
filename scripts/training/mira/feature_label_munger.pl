@@ -2,8 +2,9 @@
 
 # Joshua outputs features labels in the form of a list of "key=value"
 # pairs, while the Moses scripts expect "key= value" and also require
-# that sparse feature names contain an underscore. This script does
-# the conversion so that we can use Moses' sparse training code.
+# that (all and only) sparse feature names contain an underscore. This
+# script does the conversion so that we can use Moses' sparse training
+# code.
 
 use strict;
 use warnings;
@@ -11,13 +12,18 @@ use warnings;
 while (my $line = <>) {
   my @tokens = split(/ \|\|\| /, $line);
 
-  # Add an underscore to every feature
-  $tokens[2] =~ s/=/_= /g;
+  if (@tokens > 1) {
 
-  # Remove underscores from dense features so they'll get translated as dense
-  $tokens[2] =~ s/tm_(\w+)_(\d+)_=/tm-$1-$2=/g;
-  $tokens[2] =~ s/lm_(\d+)_=/lm-$1=/g;
-  $tokens[2] =~ s/WordPenalty_=/WordPenalty=/g;
+    # Insert an assignment space
+    $tokens[2] =~ s/=/= /g;
 
-  print join(" ||| ", @tokens);
+    # Remove underscores from dense features so they'll not get treated as sparse
+    $tokens[2] =~ s/tm_(\w+)_(\d+)=/tm-$1-$2=/g;
+    $tokens[2] =~ s/lm_(\d+)=/lm-$1=/g;
+
+    # Add underscores to sparse features so they'll not get treated as dense
+    $tokens[2] =~ s/OOVPenalty=/OOV_Penalty=/g;
+
+    print join(" ||| ", @tokens);
+  }
 }

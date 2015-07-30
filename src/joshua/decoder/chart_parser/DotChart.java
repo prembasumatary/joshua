@@ -6,11 +6,13 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+
 import joshua.corpus.Vocabulary;
 import joshua.decoder.ff.tm.Grammar;
 import joshua.decoder.ff.tm.Rule;
 import joshua.decoder.ff.tm.RuleCollection;
 import joshua.decoder.ff.tm.Trie;
+import joshua.decoder.segment_file.Token;
 import joshua.lattice.Arc;
 import joshua.lattice.Lattice;
 import joshua.lattice.Node;
@@ -68,7 +70,7 @@ class DotChart {
   private final int sentLen;
 
   /* Represents the input sentence being translated. */
-  private final Lattice<Integer> input;
+  private final Lattice<Token> input;
 
   /* If enabled, rule terminals are treated as regular expressions. */
   private final boolean regexpMatching;
@@ -104,7 +106,7 @@ class DotChart {
 
 
 
-  public DotChart(Lattice<Integer> input, Grammar grammar, Chart chart,
+  public DotChart(Lattice<Token> input, Grammar grammar, Chart chart,
       NonterminalMatcher nonTerminalMatcher, boolean regExpMatching) {
 
     this.dotChart = chart;
@@ -116,24 +118,8 @@ class DotChart {
     this.nonTerminalMatcher = nonTerminalMatcher;
     this.regexpMatching = regExpMatching;
 
-    // seeding the dotChart
     seed();
   }
-
-
-  /*
-   * public DotChart(Lattice<Integer> input, Grammar grammar, Chart chart, boolean
-   * useRegexpMatching) { this.dotChart = chart; this.pGrammar = grammar; this.input = input;
-   * this.sentLen = input.size(); this.dotcells = new ChartSpan<DotCell>(sentLen, null);
-   * 
-   * // seeding the dotChart seed();
-   * 
-   * this.regexpMatching = useRegexpMatching; }
-   */
-
-  // ===============================================================
-  // Package-protected methods
-  // ===============================================================
 
   /**
    * Add initial dot items: dot-items pointer to the root of the grammar trie.
@@ -188,10 +174,10 @@ class DotChart {
      * (2) If the the dot-item is looking for a source-side terminal symbol, we simply match against
      * the input sentence and advance the dot.
      */
-    Node<Integer> node = input.getNode(j - 1);
-    for (Arc<Integer> arc : node.getOutgoingArcs()) {
+    Node<Token> node = input.getNode(j - 1);
+    for (Arc<Token> arc : node.getOutgoingArcs()) {
 
-      int last_word = arc.getLabel();
+      int last_word = arc.getLabel().getWord();
       int arc_len = arc.getHead().getNumber() - arc.getTail().getNumber();
 
       // int last_word=foreign_sent[j-1]; // input.getNode(j-1).getNumber(); //
@@ -343,9 +329,9 @@ class DotChart {
    * @param curSuperNode the lefthand side of the rule being created
    * @param srcPath the path taken through the input lattice
    */
-  private void addDotItem(Trie tnode, int i, int j, List<SuperNode> antSuperNodesIn,
+  private void addDotItem(Trie tnode, int i, int j, ArrayList<SuperNode> antSuperNodesIn,
       SuperNode curSuperNode, SourcePath srcPath) {
-    List<SuperNode> antSuperNodes = new ArrayList<SuperNode>();
+    ArrayList<SuperNode> antSuperNodes = new ArrayList<SuperNode>();
     if (antSuperNodesIn != null) {
       antSuperNodes.addAll(antSuperNodesIn);
     }
@@ -406,19 +392,36 @@ class DotChart {
    */
   static class DotNode {
 
-    // =======================================================
-    // Package-protected instance fields
-    // =======================================================
-
-    // int i, j; //start and end position in the chart
-    private Trie trieNode = null; // dot_position, point to grammar trie node, this is the only
-                                  // place that the DotChart points to the grammar
-    private List<SuperNode> antSuperNodes = null; // pointer to SuperNode in Chart
+    private int i, j;
+    private Trie trieNode = null;
+    
+    /* A list of grounded (over a span) nonterminals that have been crossed in traversing the rule */
+    private ArrayList<SuperNode> antSuperNodes = null;
+    
+    /* The source lattice cost of applying the rule */
     private SourcePath srcPath;
 
-    public DotNode(int i, int j, Trie trieNode, List<SuperNode> antSuperNodes, SourcePath srcPath) {
-      // i = i_in;
-      // j = j_in;
+    @Override
+    public String toString() {
+      int size = 0;
+      if (trieNode != null && trieNode.getRuleCollection() != null)
+        size = trieNode.getRuleCollection().getRules().size();
+      return String.format("DOTNODE i=%d j=%d #rules=%d #tails=%d", i, j, size, antSuperNodes.size());
+    }
+    
+    /**
+     * Initialize a dot node with the span, grammar trie node, list of supernode tail pointers, and
+     * the lattice sourcepath.
+     * 
+     * @param i
+     * @param j
+     * @param trieNode
+     * @param antSuperNodes
+     * @param srcPath
+     */
+    public DotNode(int i, int j, Trie trieNode, ArrayList<SuperNode> antSuperNodes, SourcePath srcPath) {
+      this.i = i;
+      this.j = j;
       this.trieNode = trieNode;
       this.antSuperNodes = antSuperNodes;
       this.srcPath = srcPath;
@@ -454,7 +457,11 @@ class DotChart {
     }
 
     // convenience function
-    public RuleCollection getApplicableRules() {
+    public boolean hasRules() {
+      return getTrieNode().getRuleCollection() != null && getTrieNode().getRuleCollection().getRules().size() != 0;
+    }
+    
+    public RuleCollection getRuleCollection() {
       return getTrieNode().getRuleCollection();
     }
 
@@ -466,9 +473,16 @@ class DotChart {
       return srcPath;
     }
 
-    public List<SuperNode> getAntSuperNodes() {
+    public ArrayList<SuperNode> getAntSuperNodes() {
       return antSuperNodes;
     }
-  }
 
+    public int begin() {
+      return i;
+    }
+    
+    public int end() {
+      return j;
+    }
+  }
 }

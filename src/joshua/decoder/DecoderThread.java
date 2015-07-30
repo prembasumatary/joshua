@@ -13,7 +13,6 @@ import joshua.decoder.ff.tm.Grammar;
 import joshua.decoder.hypergraph.ForestWalker;
 import joshua.decoder.hypergraph.GrammarBuilderWalkerFunction;
 import joshua.decoder.hypergraph.HyperGraph;
-import joshua.decoder.hypergraph.KBestExtractor;
 import joshua.decoder.phrase.Stacks;
 import joshua.decoder.segment_file.Sentence;
 import joshua.corpus.Vocabulary;
@@ -77,16 +76,16 @@ public class DecoderThread extends Thread {
    */
   public Translation translate(Sentence sentence) {
 
-    logger.info(String.format("Translating sentence #%d [thread %d]: '%s'", sentence.id(), getId(),
-        sentence.source()));
+    Decoder.LOG(1, String.format("Input %d: %s", sentence.id(), sentence.fullSource()));
 
     if (sentence.target() != null)
-      logger.info("Constraining to target sentence '" + sentence.target() + "'");
+      Decoder.LOG(1, String.format("Input %d: Constraining to target sentence '%s'", 
+          sentence.id(), sentence.target()));
 
     // skip blank sentences
     if (sentence.isEmpty()) {
-      logger.info("translation of sentence " + sentence.id() + " took 0 seconds [" + getId() + "]");
-      return new Translation(sentence, null, null, featureFunctions, joshuaConfiguration);
+      Decoder.LOG(1, String.format("Translation %d: Translation took 0 seconds", sentence.id()));
+      return new Translation(sentence, null, featureFunctions, joshuaConfiguration);
     }
     
     long startTime = System.currentTimeMillis();
@@ -106,39 +105,35 @@ public class DecoderThread extends Thread {
      * used for further processing (e.g., k-best extraction).
      */
     HyperGraph hypergraph = null;
-    KBestExtractor kBestExtractor = null;
     try {
 
-      if (joshuaConfiguration.phrase_based) {
+      if (joshuaConfiguration.search_algorithm.equals("stack")) {
         Stacks stacks = new Stacks(sentence, this.featureFunctions, grammars, joshuaConfiguration);
         
         hypergraph = stacks.search();
-        kBestExtractor = new KBestExtractor(sentence, featureFunctions, Decoder.weights, false,
-            joshuaConfiguration);
       } else {
         /* Seeding: the chart only sees the grammars, not the factories */
         Chart chart = new Chart(sentence, this.featureFunctions, grammars,
             joshuaConfiguration.goal_symbol, joshuaConfiguration);
 
-        hypergraph = chart.expand();
-        kBestExtractor = new KBestExtractor(sentence, featureFunctions, Decoder.weights, false,
-            joshuaConfiguration);
+        hypergraph = (joshuaConfiguration.use_dot_chart) 
+          ? chart.expand() 
+          : chart.expandSansDotChart();
       }
       
     } catch (java.lang.OutOfMemoryError e) {
-      logger.warning(String.format("sentence %d: out of memory", sentence.id()));
+      Decoder.LOG(1, String.format("Input %d: out of memory", sentence.id()));
       hypergraph = null;
     }
 
     float seconds = (System.currentTimeMillis() - startTime) / 1000.0f;
-    logger.info(String.format("translation of sentence %d took %.3f seconds [thread %d]",
-        sentence.id(), seconds, getId()));
-    logger.info(String.format("Memory used after sentence %d is %.1f MB", sentence.id(), (Runtime
+    Decoder.LOG(1, String.format("Input %d: Translation took %.3f seconds", sentence.id(), seconds));
+    Decoder.LOG(1, String.format("Memory used after sentence %d is %.1f MB", sentence.id(), (Runtime
         .getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()) / 1000000.0));
 
     /* Return the translation unless we're doing synchronous parsing. */
     if (!joshuaConfiguration.parse || hypergraph == null) {
-      return new Translation(sentence, hypergraph, kBestExtractor, featureFunctions, joshuaConfiguration);
+      return new Translation(sentence, hypergraph, featureFunctions, joshuaConfiguration);
     }
 
     /*****************************************************************************************/
@@ -174,7 +169,7 @@ public class DecoderThread extends Thread {
     logger.info(String.format("Memory used after sentence %d is %.1f MB", sentence.id(), (Runtime
         .getRuntime().totalMemory() - Runtime.getRuntime().freeMemory()) / 1000000.0));
 
-    return new Translation(sentence, englishParse, chart.kBestExtractor, featureFunctions, joshuaConfiguration); // or do something else
+    return new Translation(sentence, englishParse, featureFunctions, joshuaConfiguration); // or do something else
   }
 
   private Grammar getGrammarFromHyperGraph(String goal, HyperGraph hg) {

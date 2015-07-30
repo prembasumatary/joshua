@@ -4,7 +4,10 @@ import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.io.BufferedReader;
+import java.io.FileReader;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.logging.Logger;
 
 import joshua.decoder.ff.StatefulFF;
@@ -23,8 +26,6 @@ import joshua.util.io.LineReader;
  * @author Matt Post <post@cs.jhu.edu>
  */
 public class JoshuaConfiguration {
-  // List of language models to load
-  public ArrayList<String> lms = new ArrayList<String>();
 
   // List of grammar files to read
   public ArrayList<String> tms = new ArrayList<String>();
@@ -51,14 +52,37 @@ public class JoshuaConfiguration {
    * 
    * If this is empty, an unweighted default_non_terminal is used.
    */
-  public String[] oov_list = null;
-  public float[] oov_weights = null;
+  
+  public class OOVItem implements Comparable<OOVItem> {
+    public String label;
+    public float weight;
+
+    OOVItem(String l, float w) {
+      label = l;
+      weight = w;
+    }
+    
+    @Override
+    public int compareTo(OOVItem other) {
+      if (weight > other.weight) 
+        return -1;
+      else if (weight < other.weight)
+        return 1;
+      return 0;
+    }
+  }
+  public ArrayList<OOVItem> oovList = null;
 
   /*
    * Whether to segment OOVs into a lattice
    */
   public boolean segment_oovs = false;
-
+  
+  /*
+   * Enable lattice decoding.
+   */
+  public boolean lattice_decoding = false;
+  
   /*
    * If false, sorting of the complete grammar is done at load time. If true, grammar tries are not
    * sorted till they are first accessed. Amortized sorting means you get your first translation
@@ -86,14 +110,14 @@ public class JoshuaConfiguration {
    * N-best configuration.
    */
   // Make sure output strings in the n-best list are unique.
-  public boolean use_unique_nbest = false;
+  public boolean use_unique_nbest = true;
 
   /* Include the phrasal alignments in the output (not word-level alignmetns at the moment). */
   public boolean include_align_index = false;
 
   /* The number of hypotheses to output by default. */
   public int topN = 1;
-
+  
   /**
    * This string describes the format of each line of output from the decoder (i.e., the
    * translations). The string can include arbitrary text and also variables. The following
@@ -119,18 +143,11 @@ public class JoshuaConfiguration {
   // disk hg
   public String hypergraphFilePattern = "";
 
-  // hypergraph visualization
-  public boolean visualize_hypergraph = false;
-
-  // use google linear corpus gain?
-  public boolean useGoogleLinearCorpusGain = false;
-  public double[] linearCorpusGainThetas = null;
-
   /*
    * When true, _OOV is appended to all words that are passed through (useful for something like
    * transliteration on the target side
    */
-  public boolean mark_oovs = true;
+  public boolean mark_oovs = false;
 
   /* Enables synchronous parsing. */
   public boolean parse = false; // perform synchronous parsing
@@ -176,14 +193,37 @@ public class JoshuaConfiguration {
    * Phrase-based decoding parameters.
    */
   
-  /* Whether phrase-based decoding is happening */
-  public boolean phrase_based = false;
+  /* The search algorithm: currently either "cky" or "stack" */
+  public String search_algorithm = "cky";
   
   /* The distortion limit */
   public int reordering_limit = 8;
   
   /* The number of target sides considered for each source side (after sorting by model weight) */
   public int num_translation_options = 20;
+
+  /* If true, decode using a dot chart (standard CKY+); if false, use the much more efficient
+   * version of Sennrich (SSST 2014)
+   */
+  public boolean use_dot_chart = true;
+  
+  /* Moses compatibility */
+  public boolean moses = false;
+  
+  /* If true, just print out the weights found in the config file, and exit. */
+  public boolean show_weights_and_quit = false;
+  
+  /* Read input from a file (Moses compatible flag) */
+  public String input_file = null;
+  
+  /* Write n-best output to this file */
+  public String n_best_file = null;
+
+  /* Whether to look at source side for special annotations */
+  public boolean source_annotations = false;
+
+  /* Weights overridden from the command line */
+  public String weight_overwrite = "";
   
   /**
    * This method resets the state of JoshuaConfiguration back to the state after initialization.
@@ -201,12 +241,11 @@ public class JoshuaConfiguration {
     logger.info("\n\tResetting the StatefullFF global state index ...");
     logger.info("\n\t...done");
     StatefulFF.resetGlobalStateIndex();
-    lms = new ArrayList<String>();
     tms = new ArrayList<String>();
     weights_file = "";
     default_non_terminal = "[X]";
-    oov_list = null;
-    oov_weights = null;
+    oovList = new ArrayList<OOVItem>(); 
+    oovList.add(new OOVItem(default_non_terminal, 1.0f));
     goal_symbol = "[GOAL]";
     amortized_sorting = true;
     constrain_parse = false;
@@ -221,10 +260,7 @@ public class JoshuaConfiguration {
     outputFormat = "%i ||| %s ||| %f ||| %c";
     num_parallel_decoders = 1;
     hypergraphFilePattern = "";
-    visualize_hypergraph = false;
-    useGoogleLinearCorpusGain = false;
-    linearCorpusGainThetas = null;
-    mark_oovs = true;
+    mark_oovs = false;
     // oracleFile = null;
     parse = false; // perform synchronous parsing
     features = new ArrayList<String>();
@@ -254,14 +290,16 @@ public class JoshuaConfiguration {
         String key = options[i].substring(1);
         if (i + 1 == options.length || options[i + 1].startsWith("-")) {
           // if this is the last item, or if the next item
-          // is another flag, then this is an argument-less
-          // flag
-          out.println(key + "=true");
+          // is another flag, then this is a boolean flag
+          out.println(key + " = true");
 
         } else {
-          out.println(key + "=" + options[i + 1]);
-          // skip the next item
-          i++;
+          out.print(key + " =");
+          while (i + 1 < options.length && ! options[i + 1].startsWith("-")) {
+            out.print(String.format(" %s", options[i + 1]));
+            i++;
+          }
+          out.println();
         }
       }
       out.close();
@@ -277,11 +315,11 @@ public class JoshuaConfiguration {
 
   public void readConfigFile(String configFile) throws IOException {
 
-    LineReader configReader = new LineReader(configFile);
+    LineReader configReader = new LineReader(configFile, false);
     try {
       for (String line : configReader) {
         line = line.trim(); // .toLowerCase();
-
+        
         if (Regex.commentOrEmptyLine.matches(line))
           continue;
 
@@ -292,20 +330,55 @@ public class JoshuaConfiguration {
          */
 
         if (line.indexOf("=") != -1) { // parameters; (not feature function)
-          String[] fds = Regex.equalsWithSpaces.split(line);
-          if (fds.length != 2) {
-            logger.severe("* FATAL: bad config file line '" + line + "'");
-            System.exit(1);
+          String[] fds = Regex.equalsWithSpaces.split(line, 2);
+          if (fds.length < 2) {
+            Decoder.LOG(1, String.format("* WARNING: skipping config file line '%s'", line));
+            continue;
           }
 
           String parameter = normalize_key(fds[0]);
 
-          // store the line for later processing
           if (parameter.equals(normalize_key("lm"))) {
-            lms.add(fds[1]);
+            /* This is deprecated. This support old LM lines of the form
+             * 
+             *   lm = berkeleylm 5 false false 100 lm.gz
+             * 
+             * LMs are now loaded as general feature functions, so we transform that to either
+             * 
+             *   feature-function = LanguageModel -lm_order 5 -lm_type berkeleylm -lm_file lm.gz
+             * 
+             * If the line were state minimizing:
+             * 
+             *   lm = kenlm 5 true false 100 lm.gz
+             *              
+             * feature-function = StateMinimizingLanguageModel -lm_order 5 -lm_file lm.gz
+             */
+            
+            String[] tokens = fds[1].split("\\s+");
+            if (tokens[2].equals("true"))
+              features.add(String.format("feature_function = StateMinimizingLanguageModel -lm_type kenlm -lm_order %s -lm_file %s",
+                  tokens[1], tokens[5]));
+            else
+              features.add(String.format("feature_function = LanguageModel -lm_type %s -lm_order %s -lm_file %s",
+                  tokens[0], tokens[1], tokens[5]));
 
           } else if (parameter.equals(normalize_key("tm"))) {
-            tms.add(fds[1]);
+            /* If found, convert old format:
+             *   tm = TYPE OWNER MAXSPAN PATH
+             * to new format
+             *   tm = TYPE -owner OWNER -maxspan MAXSPAN -path PATH    
+             */
+            String tmLine = fds[1];
+            
+            String[] tokens = fds[1].split("\\s+");
+            if (! tokens[1].startsWith("-")) { // old format
+              tmLine = String.format("%s -owner %s -maxspan %s -path %s", tokens[0], tokens[1], tokens[2], tokens[3]);
+              Decoder.LOG(1, String.format("WARNING: Converting deprecated TM line from '%s' -> '%s'", fds[1], tmLine));
+            }
+            tms.add(tmLine);
+            
+          } else if (parameter.equals("v")) {
+            Decoder.VERBOSE = Integer.parseInt(fds[1]);
 
           } else if (parameter.equals(normalize_key("parse"))) {
             parse = Boolean.parseBoolean(fds[1]);
@@ -317,35 +390,59 @@ public class JoshuaConfiguration {
                 .finest(String.format("  hypergraph dump file format: %s", hypergraphFilePattern));
 
           } else if (parameter.equals(normalize_key("oov-list"))) {
-            String[] oovs = fds[1].trim().split("\\s+");
-            if (oovs.length % 2 != 0) {
-              System.err.println(String.format("* FATAL: invalid format for '%s'", fds[0]));
-              System.exit(1);
+            if (new File(fds[1]).exists()) {
+              oovList = new ArrayList<OOVItem>();
+              try {
+                File file = new File(fds[1]);
+                BufferedReader br = new BufferedReader(new FileReader(file));
+                try {
+                  String str = br.readLine();
+                  while (str != null) {
+                    String[] tokens = str.trim().split("\\s+");
+
+                    oovList.add(new OOVItem(FormatUtils.markup(tokens[0]),
+                            (float) Math.log(Float.parseFloat(tokens[1]))));
+
+                    str = br.readLine();
+                  }
+                  br.close();
+                } catch(IOException e){
+                  System.out.println(e);
+                }
+              } catch(IOException e){
+                System.out.println(e);
+              }
+              Collections.sort(oovList);
+
+            } else {
+              String[] tokens = fds[1].trim().split("\\s+");
+              if (tokens.length % 2 != 0) {
+                  System.err.println(String.format("* FATAL: invalid format for '%s'", fds[0]));
+                  System.exit(1);
+                }
+
+              oovList = new ArrayList<OOVItem>();
+
+              for (int i = 0; i < tokens.length; i += 2)
+                oovList.add(new OOVItem(FormatUtils.markup(tokens[i]),
+                    (float) Math.log(Float.parseFloat(tokens[i + 1]))));
+
+              Collections.sort(oovList);
             }
 
-            oov_list = new String[oovs.length / 2];
-            oov_weights = new float[oovs.length / 2];
-
-            for (int i = 0; i < oovs.length; i += 2) {
-              oov_list[i / 2] = FormatUtils.markup(oovs[i]);
-              oov_weights[i / 2] = Float.parseFloat(oovs[i + 1]);
-            }
-
+          } else if (parameter.equals(normalize_key("lattice-decoding"))) {
+            lattice_decoding = true;
+            
           } else if (parameter.equals(normalize_key("segment-oovs"))) {
             segment_oovs = true;
+            lattice_decoding = true;
 
           } else if (parameter.equals(normalize_key("default-non-terminal"))) {
-            default_non_terminal = "[" + fds[1].trim() + "]";
-            // default_non_terminal = fds[1].trim();
+            default_non_terminal = String.format("[%s]", FormatUtils.cleanNonterminal(fds[1].trim()));
             logger.finest(String.format("default_non_terminal: %s", default_non_terminal));
 
           } else if (parameter.equals(normalize_key("goal-symbol"))) {
-            goal_symbol = fds[1].trim();
-
-            // If the goal symbol was not enclosed in square brackets, then add them
-            if (!goal_symbol.matches("\\[.*\\]"))
-              goal_symbol = "[" + goal_symbol + "]";
-
+            goal_symbol = String.format("[%s]", FormatUtils.cleanNonterminal(fds[1].trim()));
             logger.finest("goalSymbol: " + goal_symbol);
 
           } else if (parameter.equals(normalize_key("weights-file"))) {
@@ -391,10 +488,6 @@ public class JoshuaConfiguration {
             }
             logger.finest(String.format("num_parallel_decoders: %s", num_parallel_decoders));
 
-          } else if (parameter.equals(normalize_key("visualize_hypergraph"))) {
-            visualize_hypergraph = Boolean.valueOf(fds[1]);
-            logger.finest(String.format("visualize_hypergraph: %s", visualize_hypergraph));
-
           } else if (parameter.equals(normalize_key("mark_oovs"))) {
             mark_oovs = Boolean.valueOf(fds[1]);
             logger.finest(String.format("mark_oovs: %s", mark_oovs));
@@ -402,23 +495,6 @@ public class JoshuaConfiguration {
           } else if (parameter.equals(normalize_key("pop-limit"))) {
             pop_limit = Integer.valueOf(fds[1]);
             logger.finest(String.format("pop-limit: %s", pop_limit));
-
-          } else if (parameter.equals(normalize_key("useGoogleLinearCorpusGain"))) {
-            useGoogleLinearCorpusGain = new Boolean(fds[1].trim());
-            logger
-                .finest(String.format("useGoogleLinearCorpusGain: %s", useGoogleLinearCorpusGain));
-
-          } else if (parameter.equals(normalize_key("googleBLEUWeights"))) {
-            String[] googleWeights = fds[1].trim().split(";");
-            if (googleWeights.length != 5) {
-              logger.severe("wrong line=" + line);
-              System.exit(1);
-            }
-            linearCorpusGainThetas = new double[5];
-            for (int i = 0; i < 5; i++)
-              linearCorpusGainThetas[i] = new Double(googleWeights[i]);
-
-            logger.finest(String.format("googleBLEUWeights: %s", linearCorpusGainThetas));
 
           } else if (parameter.equals(normalize_key("server-port"))) {
             server_port = Integer.parseInt(fds[1]);
@@ -458,12 +534,53 @@ public class JoshuaConfiguration {
             Tree.readMapping(fragmentMapFile);
 
           /** PHRASE-BASED PARAMETERS **/
+          } else if (parameter.equals(normalize_key("search"))) {
+            search_algorithm = fds[1];
+            
+            if (!search_algorithm.equals("cky") && !search_algorithm.equals("stack")) {
+              System.err.println("* FATAL: -search must be one of 'stack' (for phrase-based decoding)");
+              System.err.println("*   or 'cky' (for hierarchical / syntactic decoding)");
+              System.exit(1);
+            }
 
           } else if (parameter.equals(normalize_key("reordering-limit"))) {
             reordering_limit = Integer.parseInt(fds[1]);
 
           } else if (parameter.equals(normalize_key("num-translation-options"))) {
             num_translation_options = Integer.parseInt(fds[1]);
+            
+          } else if (parameter.equals(normalize_key("no-dot-chart"))) {
+            use_dot_chart = false;
+            
+          } else if (parameter.equals(normalize_key("moses"))) {
+            moses = true; // triggers some Moses-specific compatibility options
+            
+          } else if (parameter.equals(normalize_key("show-weights"))) {
+            show_weights_and_quit = true;
+
+          } else if (parameter.equals(normalize_key("input-type"))) {
+            ; // for Moses compatibility; ignore this 
+
+          } else if (parameter.equals(normalize_key("n-best-list"))) {
+            // for Moses compatibility
+            String[] tokens = fds[1].split("\\s+");
+            n_best_file = tokens[0];
+            if (tokens.length > 1)
+              topN = Integer.parseInt(tokens[1]);
+
+          } else if (parameter.equals(normalize_key("input-file"))) {
+            // for Moses compatibility
+            input_file = fds[1];
+            
+          } else if (parameter.equals(normalize_key("weight-file"))) {
+            // for Moses, ignore
+
+          } else if (parameter.equals(normalize_key("weight-overwrite"))) {
+            weight_overwrite = fds[1];
+            
+          } else if (parameter.equals(normalize_key("source-annotations"))) {
+            // Check source sentence
+            source_annotations = true;
 
           } else {
 
@@ -482,7 +599,7 @@ public class JoshuaConfiguration {
             }
           }
 
-          logger.info(String.format("    %s = '%s'", normalize_key(fds[0]), fds[1]));
+          Decoder.LOG(1, String.format("    %s = '%s'", normalize_key(fds[0]), fds[1]));
 
         } else {
           /*
@@ -495,17 +612,6 @@ public class JoshuaConfiguration {
       }
     } finally {
       configReader.close();
-    }
-
-    if (useGoogleLinearCorpusGain) {
-      if (linearCorpusGainThetas == null) {
-        logger.info("linearCorpusGainThetas is null, did you set googleBLEUWeights properly?");
-        System.exit(1);
-      } else if (linearCorpusGainThetas.length != 5) {
-        logger
-            .info("linearCorpusGainThetas does not have five values, did you set googleBLEUWeights properly?");
-        System.exit(1);
-      }
     }
   }
 

@@ -8,6 +8,7 @@ package joshua.decoder.phrase;
  * in computing this estimate.	
  */
 
+import joshua.decoder.Decoder;
 import joshua.util.ChartSpan;
 
 public class Future {
@@ -39,11 +40,14 @@ public class Future {
       // Insert phrases
       int max_end = Math.min(begin + chart.MaxSourcePhraseLength(), chart.SentenceLength());
       for (int end = begin + 1; end <= max_end; end++) {
-        TargetPhrases phrases = chart.getRange(begin, end);
-        if (phrases != null) {
-//          System.err.println(String.format("SETENTRY(%d,%d) = %.3f %s", begin, end, phrases.get(0).getEstimatedCost(),
-//          phrases.get(0)));
-          setEntry(begin, end, phrases.get(0).getEstimatedCost());
+        
+        // Moses doesn't include the cost of applying </s>, so force it to zero
+        if (begin == sentlen - 1 && end == sentlen) 
+          setEntry(begin, end, 0.0f);
+        else {
+          TargetPhrases phrases = chart.getRange(begin, end);
+          if (phrases != null)
+            setEntry(begin, end, phrases.get(0).getEstimatedCost());
         }
       }
     }
@@ -56,6 +60,12 @@ public class Future {
         }
       }
     }
+    
+    if (Decoder.VERBOSE >= 3) {
+      for (int i = 1; i < chart.SentenceLength(); i++)
+        for (int j = i + 1; j < chart.SentenceLength(); j++)
+          System.err.println(String.format("future cost from %d to %d is %.3f", i-1, j-2, getEntry(i, j)));
+    }
   }
   
   public float Full() {
@@ -67,8 +77,8 @@ public class Future {
    * Calculate change in rest cost when the given coverage is to be covered.
    */                       
   public float Change(Coverage coverage, int begin, int end) {
-    int left = coverage.LeftOpen(begin);
-    int right = coverage.RightOpen(end, sentlen);
+    int left = coverage.leftOpening(begin);
+    int right = coverage.rightOpening(end, sentlen);
 //    System.err.println(String.format("Future::Change(%s, %d, %d) left %d right %d %.3f %.3f %.3f", coverage, begin, end, left, right,
 //        Entry(left, begin), Entry(end, right), Entry(left, right)));
     return getEntry(left, begin) + getEntry(end, right) - getEntry(left, right);

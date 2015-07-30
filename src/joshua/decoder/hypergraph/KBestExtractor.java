@@ -57,18 +57,14 @@ import joshua.decoder.segment_file.Sentence;
  * 
  * and so on.
  * 
- * Technical notes (from before):
+ * The configuration parameter `output-format` controls what exactly is extracted from the forest.
+ * See documentation for that below. Note that Joshua does not store individual feature values while 
+ * decoding, but only the cost of each edge (in the form of a float). Therefore, if you request
+ * the features values (`%f` in `output-format`), the feature functions must be replayed, which
+ * is expensive.
  * 
- * To seed the kbest extraction, it only needs that each hyperedge should have the best_cost
- * properly set, and it does not require any list being sorted. Instead, the priority queue
- * heap_cands will do internal sorting. In fact, the real crucial cost is the transition-cost at
- * each hyperedge. We store the best-cost instead of the transition cost since it is easy to do
- * pruning and find one-best. Moreover, the transition cost can be recovered by
- * get_transition_cost(), though somewhat expensive.
- * 
- * To recover the model cost for each individual model, we should either have access to the model,
- * or store the model cost in the hyperedge. (For example, in the case of disk-hypergraph, we need
- * to store all these model cost at each hyperedge.)
+ * The configuration parameter `top-n` controls how many items are returned. If this is set to 0,
+ * k-best extraction should be turned off entirely.
  * 
  * @author Zhifei Li, <zhifei.work@gmail.com>
  * @author Matt Post <post@cs.jhu.edu>
@@ -166,31 +162,22 @@ public class KBestExtractor {
           || joshuaConfiguration.outputFormat.contains("%d"))
         features = derivationState.replayFeatures();
 
-      hypothesis = derivationState.getHypothesis();
+      hypothesis = derivationState.getHypothesis()
+          .replaceAll("-lsb-", "[")
+          .replaceAll("-rsb-", "]")
+          .replaceAll("-pipe-", "|");
+
 
       outputString = joshuaConfiguration.outputFormat
           .replace("%k", Integer.toString(k))
           .replace("%s", hypothesis)
           .replace("%S", DeNormalize.processSingleLine(hypothesis))
           .replace("%i", Integer.toString(sentence.id()))
-          .replace("%f", features.toString())
+          .replace("%f", joshuaConfiguration.moses ? features.mosesString() : features.toString())
           .replace("%c", String.format("%.3f", derivationState.cost));
 
       if (joshuaConfiguration.outputFormat.contains("%t")) {
-        // TODO: this always outputs the Viterbi tree
-        HyperEdge topEdge = derivationState.edge.getTailNodes().get(0).bestHyperedge.getTailNodes()
-            .get(0).bestHyperedge;
-        Rule rootRule = topEdge.getRule();
-        String englishSide = rootRule.getEnglishWords();
-        List<HGNode> rootTails = topEdge.getTailNodes();
-
-        if (Tree.rulesToFragments.containsKey(englishSide)) {
-          outputString = outputString.replace("%t",
-              Tree.buildTree(rootRule, rootTails, Integer.MAX_VALUE).toString());
-        } else {
-          // TODO: add functionality to HypothesisExtractor
-          outputString = outputString.replace("%t", "Outputting the target-side tree structure only works if you specify a -fragment-map");
-        }
+        outputString = outputString.replace("%t", derivationState.getTree());
       }
 
       if (joshuaConfiguration.outputFormat.contains("%e"))
@@ -219,10 +206,14 @@ public class KBestExtractor {
    * the results to the BufferedWriter passed in. If you want intermediate access to the k-best
    * derivations, you'll want to call getKthHyp() or getKthDerivation() directly.
    * 
+   * The number of derivations that are looked for is controlled by the `top-n` parameter.
+   * Note that when `top-n` is set to 0, k-best extraction is disabled entirely, and only things 
+   * like the viterbi string and the model score are available to the decoder. Since k-best
+   * extraction involves the recomputation of features to get the component values, turning off
+   * that extraction saves a lot of time when only the 1-best string is desired.
+   * 
    * @param hg the hypergraph to extract from
-   * @param featureFunctions the feature functions to use
    * @param topN how many to extract
-   * @param sentence the input sentence
    * @param out object to write to
    * @throws IOException
    */
@@ -233,10 +224,9 @@ public class KBestExtractor {
     if (null == hg.goalNode)
       return;
 
-    for (int k = 1;; k++) {
+    for (int k = 1; k <= topN; k++) {
       String hypStr = getKthHyp(hg.goalNode, k);
-
-      if (null == hypStr || k > topN)
+      if (null == hypStr)
         break;
 
       out.write(hypStr);
@@ -701,7 +691,7 @@ public class KBestExtractor {
         if (edge.getTailNodes() != null) {
           int[] english = rule.getEnglish();
           for (int c = 0; c < english.length; c++) {
-            if (Vocabulary.idx(english[c])) {
+            if (Vocabulary.nt(english[c])) {
               int index = -(english[c] + 1);
               getChildDerivationState(edge, index).visit(visitor, indent + 1);
             }
@@ -716,6 +706,10 @@ public class KBestExtractor {
 
     private String getHypothesis() {
       return getHypothesis(defaultSide);
+    }
+
+    private String getTree() {
+      return visit(new TreeExtractor()).toString();
     }
 
     private String getHypothesis(Side side) {
@@ -769,8 +763,20 @@ public class KBestExtractor {
    * @author Matt Post <post@cs.jhu.edu>
    */
   public interface DerivationVisitor {
+    /**
+     * Called before each node's children are visited.
+     *
+     * @param state the derivation state
+     * @param level the tree depth
+     */
     void before(DerivationState state, int level);
 
+    /**
+     * Called after a node's children have been visited.
+     * 
+     * @param state the derivation state
+     * @param level the tree depth
+     */
     void after(DerivationState state, int level);
   }
 
@@ -838,6 +844,91 @@ public class KBestExtractor {
      */
     public String toString() {
       return outputs.pop().replaceAll("<s> ", "").replace(" </s>", "");
+    }
+  }
+
+  /**
+   * Assembles a Penn treebank format tree for a given derivation.
+   */
+  public class TreeExtractor implements DerivationVisitor {
+
+    /* The tree being built. */
+    private Tree tree;
+
+    public TreeExtractor() {
+      tree = null;
+    }
+
+    /**
+     * Before visiting the children, find the fragment representation for the current rule,
+     * and merge it into the tree we're building.
+     */
+    @Override
+    public void before(DerivationState state, int indent) {
+      HyperEdge edge = state.edge;
+      Rule rule = edge.getRule();
+
+      // Skip the special top-level rule
+      if (rule == null) {
+        return;
+      }
+
+      String lhs = Vocabulary.word(rule.getLHS());
+      String unbracketedLHS = lhs.substring(1, lhs.length() - 1);
+
+      /* Find the fragment corresponding to this flattened rule in the fragment map; if it's not
+       * there, just pretend it's a depth-one rule.
+       */
+      Tree fragment = Tree.getFragmentFromYield(rule.getEnglishWords());
+      if (fragment == null) {
+        String subtree = String.format("(%s %s)", unbracketedLHS, quoteTerminals(rule.getEnglishWords()));
+        fragment = Tree.fromString(subtree);
+      }
+      
+      merge(fragment);
+    }
+
+    /**
+     * Quotes just the terminals in the yield of a tree, represented as a string. This is to force
+     * compliance with the Tree class, which interprets all non-quoted strings as nonterminals. 
+     * 
+     * @param words a string of words representing a rule's yield
+     * @return
+     */
+    private String quoteTerminals(String words) {
+      String quotedWords = "";
+      for (String word: words.split("\\s+"))
+        if (word.startsWith("[") && word.endsWith("]"))
+          quotedWords += String.format("%s ", word);
+        else
+        quotedWords += String.format("\"%s\" ", word);
+
+      return quotedWords.substring(0, quotedWords.length() - 1);
+    }
+
+    @Override
+    public void after(DerivationState state, int indent) {
+      // do nothing
+    }
+
+    public String toString() {
+      return tree.unquotedString();
+    }
+
+    /**
+     * Either set the root of the tree or merge this tree by grafting it onto the first nonterminal
+     * in the yield of the parent tree.
+     * 
+     * @param fragment
+     */
+    private void merge(Tree fragment) {
+      if (tree == null) {
+        tree = fragment;
+      } else {
+        Tree parent = tree.getNonterminalYield().get(0);
+        parent.setLabel(Vocabulary.word(fragment.getLabel()));
+        parent.setChildren(fragment.getChildren());
+      }
     }
   }
 
@@ -930,10 +1021,8 @@ public class KBestExtractor {
         HyperEdge edge = state.edge;
 
         FeatureVector transitionCosts = ComputeNodeResult.computeTransitionFeatures(models, edge,
-            parentNode.i, parentNode.j, sentence.id());
+            parentNode.i, parentNode.j, sentence);
 
-//        FeatureVector transitionCosts = ComputeNodeResult.computeTransitionFeatures(models, state,
-//            parentNode.i, parentNode.j, sentence);
         features.add(transitionCosts);
       }
     }

@@ -4,9 +4,11 @@ import java.io.BufferedOutputStream;
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.nio.ByteBuffer;
+import java.util.Arrays;
 import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
@@ -50,6 +52,8 @@ public class GrammarPacker {
 
   private String dump;
 
+  private int max_source_len;
+
   static {
     SLICE_SIZE = 1000000;
     DATA_SIZE_LIMIT = (int) (Integer.MAX_VALUE * 0.8);
@@ -64,6 +68,7 @@ public class GrammarPacker {
     this.output = output_filename;
     this.dump = featuredump_filename;
     this.grammarAlignments = grammar_alignments;
+    this.max_source_len = 0;
 
     // TODO: Always open encoder config? This is debatable.
     this.types = new FeatureTypeAnalyzer(true);
@@ -151,6 +156,13 @@ public class GrammarPacker {
     logger.info("Writing vocab.");
     Vocabulary.write(output + File.separator + "vocabulary");
 
+    String configFile = output + File.separator + "config";
+    logger.info(String.format("Writing config to '%s'", configFile));
+    // Write config options
+    FileWriter config = new FileWriter(configFile);
+    config.write(String.format("max-source-len = %d\n", max_source_len));
+    config.close();
+    
     // Read previously written encoder configuration to match up to changed
     // vocabulary id's.
     logger.info("Reading encoding.");
@@ -180,16 +192,31 @@ public class GrammarPacker {
     while (grammar.hasNext()) {
       String line = grammar.next().trim();
       counter++;
-      String[] fields = line.split("\\s\\|{3}\\s");
-      if (fields.length < 4) {
-        logger.warning("Incomplete grammar line at line " + counter);
-        continue;
+      ArrayList<String> fields = new ArrayList<String>(Arrays.asList(line.split("\\s\\|{3}\\s")));
+
+      String lhs = null;
+      if (line.startsWith("[")) {
+        // hierarchical model
+        if (fields.size() < 4) {
+          logger.warning("Incomplete grammar line at line " + counter);
+          continue;
+        }
+        lhs = fields.remove(0);
+      } else {
+        // phrase-based model
+        if (fields.size() < 3) {
+          logger.warning("Incomplete phrase line at line " + counter);
+          logger.warning(line);
+          continue;
+        }
+        lhs = "[X]";
       }
 
-      String lhs = fields[0];
-      String[] source = fields[1].split("\\s");
-      String[] target = fields[2].split("\\s");
-      String[] features = fields[3].split("\\s");
+      String[] source = fields.get(0).split("\\s");
+      String[] target = fields.get(1).split("\\s");
+      String[] features = fields.get(2).split("\\s");
+      
+      max_source_len = Math.max(max_source_len, source.length);
 
       Vocabulary.id(lhs);
       try {
@@ -251,15 +278,31 @@ public class GrammarPacker {
       counter++;
       slice_counter++;
 
-      String[] fields = grammar_line.split("\\s\\|{3}\\s");
-      if (fields.length < 4) {
-        logger.warning("Incomplete grammar line at line " + counter);
-        continue;
+      ArrayList<String> fields = new ArrayList<String>(Arrays.asList(grammar_line.split("\\s\\|{3}\\s")));
+      String lhs_word;
+      String[] source_words;
+      String[] target_words;
+      String[] feature_entries;
+      if (grammar_line.startsWith("[")) {
+        if (fields.size() < 4)
+          continue;
+
+        lhs_word = fields.remove(0);
+        source_words = fields.get(0).split("\\s");
+        target_words = fields.get(1).split("\\s");
+        feature_entries = fields.get(2).split("\\s");
+
+      } else {
+        if (fields.size() < 3)
+          continue;
+        
+        lhs_word = "[X]";
+        String tmp = "[X,1] " + fields.get(0);
+        source_words = tmp.split("\\s");
+        tmp = "[X,1] " + fields.get(1);
+        target_words = tmp.split("\\s");
+        feature_entries = fields.get(2).split("\\s");
       }
-      String lhs_word = fields[0];
-      String[] source_words = fields[1].split("\\s");
-      String[] target_words = fields[2].split("\\s");
-      String[] feature_entries = fields[3].split("\\s");
 
       // Reached slice limit size, indicate that we're closing up.
       if (!ready_to_flush
@@ -287,7 +330,7 @@ public class GrammarPacker {
       if (packAlignments) {
         String alignment_line;
         if (grammarAlignments) {
-          alignment_line = fields[4];
+          alignment_line = fields.get(3);
         } else {
           if (!alignment_reader.hasNext()) {
             logger.severe("No more alignments starting in line " + counter);
@@ -555,16 +598,9 @@ public class GrammarPacker {
 
     String output_filename = null;
     if (output_prefix != null) {
-      if (output_prefix.endsWith(".packed"))
-        output_filename = output_prefix;
-      else
-        output_filename = output_prefix + (output_prefix.endsWith(".") ? "" : ".") + "packed";
+      output_filename = output_prefix;
     } else {
-      int dot_pos = grammar_filename.lastIndexOf(".");
-      if (dot_pos == -1)
-        output_filename = grammar_filename + ".packed";
-      else
-        output_filename = grammar_filename.substring(0, dot_pos + 1) + "packed";
+      output_filename = grammar_filename + ".packed";
     }
 
     if (new File(output_filename).exists()) {

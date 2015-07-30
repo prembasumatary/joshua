@@ -1,7 +1,9 @@
 package joshua.decoder;
 
 import java.io.FileInputStream;
+import java.io.FileWriter;
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.logging.Logger;
 
 import joshua.decoder.io.TranslationRequest;
@@ -42,9 +44,9 @@ public class JoshuaDecoder {
     /* Step-1: initialize the decoder, test-set independent */
     Decoder decoder = new Decoder(joshuaConfiguration, userArgs.getConfigFile());
 
-    logger.info(String.format("Model loading took %d seconds",
-      (System.currentTimeMillis() - startTime) / 1000));
-    logger.info(String.format("Memory used %.1f MB", ((Runtime.getRuntime().totalMemory() - Runtime
+    Decoder.LOG(1, String.format("Model loading took %d seconds",
+        (System.currentTimeMillis() - startTime) / 1000));
+    Decoder.LOG(1, String.format("Memory used %.1f MB", ((Runtime.getRuntime().totalMemory() - Runtime
         .getRuntime().freeMemory()) / 1000000.0)));  
 
     /* Step-2: Decoding */
@@ -54,24 +56,57 @@ public class JoshuaDecoder {
       return;
     }
     
-    // create a TranslationRequest object on STDIN
-    TranslationRequest fileRequest = new TranslationRequest(System.in, joshuaConfiguration);
+    // Create the n-best output stream
+    FileWriter out = null;
+    if (joshuaConfiguration.n_best_file != null)
+      out = new FileWriter(joshuaConfiguration.n_best_file);
+    
+    // Create a TranslationRequest object, reading from a file if requested, or from STDIN
+    InputStream input = (joshuaConfiguration.input_file != null) 
+      ? new FileInputStream(joshuaConfiguration.input_file)
+      : System.in;
+    TranslationRequest fileRequest = new TranslationRequest(input, joshuaConfiguration);
     Translations translationStream = decoder.decodeAll(fileRequest);
     for (;;) {
       Translation translation = translationStream.next();
       if (translation == null)
         break;
-      
-      System.out.print(translation);
-    }
 
-    logger.info("Decoding completed.");
-    logger.info(String.format("Memory used %.1f MB", ((Runtime.getRuntime().totalMemory() - Runtime
+      /**
+       * We need to munge the feature value outputs in order to be compatible with Moses tuners.
+       * Whereas Joshua writes to STDOUT whatever is specified in the `output-format` parameter,
+       * Moses expects the simple translation on STDOUT and the n-best list in a file with a fixed
+       * format.
+       */
+      String text;
+      if (joshuaConfiguration.moses) {
+        text = translation.toString().replaceAll("=", "= ");
+        // Write the complete formatted string to STDOUT
+        if (joshuaConfiguration.n_best_file != null)
+          out.write(text);
+        
+        // Extract just the translation and output that to STDOUT
+        text = text.substring(0,  text.indexOf('\n'));
+        String[] fields = text.split(" \\|\\|\\| ");
+        text = fields[1] + "\n";
+        
+      } else {
+        text = translation.toString();
+      }
+      
+      System.out.print(text);
+    }
+    
+    if (joshuaConfiguration.n_best_file != null)
+      out.close();
+
+    Decoder.LOG(1, "Decoding completed.");
+    Decoder.LOG(1, String.format("Memory used %.1f MB", ((Runtime.getRuntime().totalMemory() - Runtime
         .getRuntime().freeMemory()) / 1000000.0)));
 
     /* Step-3: clean up */
     decoder.cleanUp();
-    logger.info(String.format("Total running time: %d seconds",
+    Decoder.LOG(1, String.format("Total running time: %d seconds",
       (System.currentTimeMillis() - startTime) / 1000));
   }
 }

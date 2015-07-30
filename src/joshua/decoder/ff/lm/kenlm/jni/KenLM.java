@@ -16,7 +16,17 @@ import joshua.decoder.ff.state_maintenance.KenLMState;
 public class KenLM implements NGramLanguageModel, Comparable<KenLM> {
 
   static {
-    System.loadLibrary("ken");
+    try {
+      System.loadLibrary("ken");
+    } catch (UnsatisfiedLinkError e) {
+      System.err.println("* FATAL: Can't find libken.so (libken.dylib on OS X) in $JOSHUA/lib");
+      System.err.println("*        This probably means that the KenLM library didn't compile.");
+      System.err.println("*        Make sure that BOOST_ROOT is set to the root of your boost");
+      System.err.println("*        installation (it's not /opt/local/, the default), change to");
+      System.err.println("*        $JOSHUA, and type 'ant kenlm'. If problems persist, see the");
+      System.err.println("*        website (joshua-decoder.org).");
+      System.exit(1);
+    }
   }
 
   private final long pointer;
@@ -47,9 +57,8 @@ public class KenLM implements NGramLanguageModel, Comparable<KenLM> {
   public final static native long createPool();
   public final static native void destroyPool(long pointer);
 
-  public KenLM(int order, String file_name, boolean minimizing) {
+  public KenLM(int order, String file_name) {
     ngramOrder = order;
-    this.minimizing = minimizing;
 
     pointer = construct(file_name);
     N = order(pointer);
@@ -160,10 +169,5 @@ public class KenLM implements NGramLanguageModel, Comparable<KenLM> {
   @Override
   public float ngramLogProbability(int[] ngram) {
     return prob(ngram);
-  }
-
-  @Override
-  public boolean isMinimizing() {
-    return minimizing;
   }
 }

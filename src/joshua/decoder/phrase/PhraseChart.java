@@ -1,6 +1,6 @@
 package joshua.decoder.phrase;
 
-import java.util.ArrayList;
+import java.util.ArrayList;	
 import java.util.Arrays;
 import java.util.List;
 
@@ -39,6 +39,7 @@ public class PhraseChart {
 
     float startTime = System.currentTimeMillis();
 
+    this.numOptions = num_options;
     this.features = features;
 
     max_source_phrase_length = 0;
@@ -62,7 +63,7 @@ public class PhraseChart {
         if (source.hasPath(begin, end)) {
           for (PhraseTable table : tables)
             addToRange(begin, end,
-                table.getPhrases(Arrays.copyOfRange(source.intSentence(), begin, end)));
+                table.getPhrases(Arrays.copyOfRange(source.getWordIDs(), begin, end)));
         }
 
       }
@@ -73,21 +74,23 @@ public class PhraseChart {
         phrases.finish(features, Decoder.weights, num_options);
     }
 
-    System.err.println(String.format("[%d] Collecting options took %.3f seconds", source.id(),
+    Decoder.LOG(1, String.format("Input %d: Collecting options took %.3f seconds", source.id(),
         (System.currentTimeMillis() - startTime) / 1000.0f));
     
-    /*
-    for (int i = 1; i < sentence_length - 1; i++)
-      for (int j = i + 1; j < sentence_length && j <= i + max_source_phrase_length; j++)
-        if (source.hasPath(i, j)) {
-          TargetPhrases phrases = getRange(i, j);
-          if (phrases != null) {
-            System.err.println(String.format("%s (%d-%d)", source.source(i,j), i, j));
-            for (Rule rule: phrases)
-              System.err.println(String.format("    %s est=%.3f", rule.getEnglishWords(), rule.getEstimatedCost()));
+    if (Decoder.VERBOSE(3)) {
+      for (int i = 1; i < sentence_length - 1; i++) {
+        for (int j = i + 1; j < sentence_length && j <= i + max_source_phrase_length; j++) {
+          if (source.hasPath(i, j)) {
+            TargetPhrases phrases = getRange(i, j);
+            if (phrases != null) {
+              System.err.println(String.format("%s (%d-%d)", source.source(i,j), i, j));
+              for (Rule rule: phrases)
+                System.err.println(String.format("    %s :: est=%.3f", rule.getEnglishWords(), rule.getEstimatedCost()));
+            }
           }
         }
-        */
+      }
+    }
   }
 
   public int SentenceLength() {
@@ -143,21 +146,24 @@ public class PhraseChart {
     if (to != null) {
       /*
        * This first call to getSortedRules() is important, because it is what
-       * causes the scoring and sorting to happen. Subsequent calls to get the
+       * causes the scoring and sorting to happen. It is also a synchronized call,
+       * which is necessary because the underlying grammar gets sorted. Subsequent calls to get the
        * rules will just return the already-sorted list. Here, we score, sort,
-       * and then trim the list to the number of translation options. This provides *huge*
+       * and then trim the list to the number of translation options. Trimming provides huge
        * performance gains --- the more common the word, the more translations options it is
        * likely to have (often into the tens of thousands).
        */
-      if (to.getSortedRules(features).size() > numOptions)
-        to.getRules().subList(numOptions, to.getRules().size()).clear();
+      List<Rule> rules = to.getSortedRules(features);
+      if (numOptions > 0 && rules.size() > numOptions)
+        rules = rules.subList(0,  numOptions);
+//        to.getRules().subList(numOptions, to.getRules().size()).clear();
 
       try {
         int offset = offset(begin, end);
         if (entries.get(offset) == null)
-          entries.set(offset, new TargetPhrases(to.getRules()));
+          entries.set(offset, new TargetPhrases(rules));
         else
-          entries.get(offset).addAll(to.getRules());
+          entries.get(offset).addAll(rules);
       } catch (java.lang.IndexOutOfBoundsException e) {
         System.err.println(String.format("Whoops! %s [%d-%d] too long (%d)", to, begin, end,
             entries.size()));

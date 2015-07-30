@@ -1,15 +1,16 @@
 package joshua.tools;
 
-import java.io.File;
 import java.io.FileNotFoundException;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Scanner;
 import java.util.Set;
 import java.util.regex.Pattern;
+
+import joshua.util.io.LineReader;
 
 public class TestSetFilter {
   private Filter filter = null;
@@ -68,13 +69,11 @@ public class TestSetFilter {
     RULE_LENGTH = value;
   }
 
-  private void loadTestSentences(String filename) {
+  private void loadTestSentences(String filename) throws IOException {
     int count = 0;
 
     try {
-      Scanner scanner = new Scanner(new File(filename), "UTF-8");
-      while (scanner.hasNextLine()) {
-        String line = scanner.nextLine();
+      for (String line: new LineReader(filename)) {
         filter.addSentence(line);
         count++;
       }
@@ -87,7 +86,8 @@ public class TestSetFilter {
   }
 
   /**
-   * Top-level filter, responsible for calling the fast or exact version.
+   * Top-level filter, responsible for calling the fast or exact version. Takes the source side 
+   * of a rule and determines whether there is any sentence in the test set that can match it.
    */
   public boolean inTestSet(String sourceSide) {
     if (!sourceSide.equals(lastSourceSide)) {
@@ -117,8 +117,11 @@ public class TestSetFilter {
   }
 
   private interface Filter {
+    /* Tell the filter about a sentence in the test set being filtered to */
     public void addSentence(String sentence);
-    public boolean permits(String source);
+    
+    /* Returns true if the filter permits the specified source side */
+    public boolean permits(String sourceSide);
   }
 
   private class FastFilter implements Filter {
@@ -212,18 +215,24 @@ public class TestSetFilter {
       addSentenceToWordHash(source, testSentences.size());
       testSentences.add(source);
     }
-    
+
+    /**
+     * Always permit abstract rules. Otherwise, query the fast filter, and if that passes, apply
+     * 
+     */
     @Override
-    public boolean permits(String source) {
-      if (fastFilter.permits(source)) {
-        Pattern pattern = getPattern(source);
-        for (int i : getSentencesForRule(source)) {
+    public boolean permits(String sourceSide) {
+      if (isAbstract(sourceSide))
+        return true;
+      
+      if (fastFilter.permits(sourceSide)) {
+        Pattern pattern = getPattern(sourceSide);
+        for (int i : getSentencesForRule(sourceSide)) {
           if (pattern.matcher(testSentences.get(i)).find()) {
             return true;
           }
         }
-        return isAbstract(source);
-      }
+      } 
       return false;
     }
     
@@ -249,13 +258,13 @@ public class TestSetFilter {
     
     private Set<Integer> getSentencesForRule(String source) {
       Set<Integer> sentences = null;
-      for (String t : source.split("\\s+")) {
-        if (!t.matches(NT_REGEX)) {
-          if (sentencesByWord.containsKey(t)) {
+      for (String token : source.split("\\s+")) {
+        if (!token.matches(NT_REGEX)) {
+          if (sentencesByWord.containsKey(token)) {
             if (sentences == null)
-              sentences = new HashSet<Integer>(sentencesByWord.get(t));
+              sentences = new HashSet<Integer>(sentencesByWord.get(token));
             else
-              sentences.retainAll(sentencesByWord.get(t));
+              sentences.retainAll(sentencesByWord.get(token));
           }
         }
       }
@@ -264,16 +273,21 @@ public class TestSetFilter {
     }
   }
 
-  public static void main(String[] argv) {
+  public static void main(String[] argv) throws IOException {
     // do some setup
     if (argv.length < 1) {
-      System.err.println("usage: TestSetFilter [-v|-p|-f|-n N] <test set1> [test set2 ...]");
+      System.err.println("usage: TestSetFilter [-v|-p|-f|-e|-l|-n N|-g grammar] test_set1 [test_set2 ...]");
+      System.err.println("    -g    grammar file (can also be on STDIN)");
       System.err.println("    -v    verbose output");
       System.err.println("    -p    parallel compatibility");
-      System.err.println("    -f    fast mode");
+      System.err.println("    -f    fast mode (default)");
+      System.err.println("    -e    exact mode (slower)");
+      System.err.println("    -l    loose mode");
       System.err.println("    -n    max n-gram to compare to (default 12)");
       return;
     }
+    
+    String grammarFile = null;
 
     TestSetFilter filter = new TestSetFilter();
 
@@ -283,6 +297,9 @@ public class TestSetFilter {
         continue;
       } else if (argv[i].equals("-p")) {
         filter.setParallel(true);
+        continue;
+      } else if (argv[i].equals("-g")) {
+        grammarFile = argv[++i];
         continue;
       } else if (argv[i].equals("-f")) {
         filter.setFilter("fast");
@@ -302,30 +319,22 @@ public class TestSetFilter {
       filter.loadTestSentences(argv[i]);
     }
 
-    Scanner scanner = new Scanner(System.in, "UTF-8");
     int rulesIn = 0;
     int rulesOut = 0;
     if (filter.verbose) {
       System.err.println(String.format("Filtering rules with the %s filter...", filter.getFilterName()));
 //      System.err.println("Using at max " + filter.RULE_LENGTH + " n-grams...");
     }
-    while (scanner.hasNextLine()) {
-      if (filter.verbose) {
-        if ((rulesIn + 1) % 2000 == 0) {
-          System.err.print(".");
-          System.err.flush();
-        }
-        if ((rulesIn + 1) % 100000 == 0) {
-          System.err.println(" [" + (rulesIn + 1) + "]");
-          System.err.flush();
-        }
-      }
+    LineReader reader = (grammarFile != null) 
+        ? new LineReader(grammarFile, filter.verbose)
+        : new LineReader(System.in); 
+    for (String rule: reader) {
       rulesIn++;
-      String rule = scanner.nextLine();
 
       String[] parts = P_DELIM.split(rule);
       if (parts.length >= 4) {
-        String source = parts[1].trim();
+        // the source is the second field for thrax grammars, first field for phrasal ones 
+        String source = rule.startsWith("[") ? parts[1].trim() : parts[0].trim();
         if (filter.inTestSet(source)) {
           System.out.println(rule);
           if (filter.parallel)

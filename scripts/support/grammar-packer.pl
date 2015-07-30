@@ -16,12 +16,15 @@
 use strict;
 use warnings;
 use Getopt::Std;
+use File::Temp qw/tempfile/;
+use File::Basename qw/basename/;
 
 my %opts = (
-  m => '8g',    # amount of memory to give the packer
-  T => '/state/partition1',
+  m => '8g',      # amount of memory to give the packer
+  T => '/tmp',    # location of temporary space
+  v => 0,         # verbose
 );
-getopts("m:T:", \%opts);
+getopts("m:T:v", \%opts);
 
 my $JOSHUA = $ENV{JOSHUA} or die "you must defined \$JOSHUA";
 my $CAT    = "$JOSHUA/scripts/training/scat";
@@ -39,17 +42,34 @@ if (! -e $grammar) {
   exit 1;
 }
 
-# Sort the grammar.
-my $sorted_grammar = "grammar.sorted.gz";
-if (system("$CAT $grammar | sort -k3,3 --buffer-size=$opts{m} -T $opts{T} | gzip -9n > $sorted_grammar")) {
-  print STDERR "* FATAL: Couldn't sort the grammar (not enough memory? short on tmp space?)\n";
-  exit 2;
-}
+# Sort the grammar or phrase table
+my $name = basename($grammar);
+my (undef,$sorted_grammar) = tempfile("${name}XXXX", DIR => $opts{T}, UNLINK => 1);
+print STDERR "Sorting grammar to $sorted_grammar...\n" if $opts{v};
+
+# We need to sort by source side, which is field 0 (for phrase tables not listing the LHS)
+# or field 1 (convention, Thrax format)
+chomp(my $first_line = `$CAT $grammar | head -n1`);
+if ($first_line =~ /^\[/) {
+  # regular grammar
+  if (system("$CAT $grammar | sort -k3,3 --buffer-size=$opts{m} -T $opts{T} | gzip -9n > $sorted_grammar")) {
+    print STDERR "* FATAL: Couldn't sort the grammar (not enough memory? short on tmp space?)\n";
+    exit 2;
+  }
+} else {
+  # Moses phrase-based grammar -- prepend nonterminal symbol and -log() the weights
+  if (system("$CAT $grammar | $JOSHUA/scripts/support/moses_phrase_to_joshua.pl | sort -k3,3 --buffer-size=$opts{m} -T $opts{T} | gzip -9n > $sorted_grammar")) {
+    print STDERR "* FATAL: Couldn't sort the grammar (not enough memory? short on tmp space?)\n";
+    exit 2;
+  }
+}  
+#my $source_field = ($first_line =~ /^\[/) ? "3,3" : "1,1";
+
 $grammar = $sorted_grammar;
 
 # Do the packing using the config.
 my $cmd = "java -Xmx$opts{m} -cp $JOSHUA/class joshua.tools.GrammarPacker -p $output_dir -g $grammar";
-print STDERR "Packing with $cmd\n";
+print STDERR "Packing with $cmd...\n" if $opts{v};
 my $retval = system($cmd);
 
 if ($retval == 0) {

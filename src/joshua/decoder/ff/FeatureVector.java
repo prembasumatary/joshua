@@ -2,7 +2,10 @@ package joshua.decoder.ff;
 
 import joshua.decoder.Decoder;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
@@ -134,12 +137,7 @@ public class FeatureVector {
     if (features.containsKey(feature))
       return features.get(feature);
 
-    throw new RuntimeException(
-        "Error : unknown feature "
-            + feature
-            + " Beware: The behavior has been changed.\n"
-            + "This method no longer returns 0 for non-present features. Instead it is the responsibility of the querying function to make "
-            + "sure the value exists before requesting it");
+    return 0.0f;
   }
 
   public void put(String feature, float value) {
@@ -168,23 +166,65 @@ public class FeatureVector {
   }
 
   /***
+   * Moses distinguishes sparse features as those containing an underscore, so we have to fake it
+   * to be compatible with their tuners.
+   */
+  public String mosesString() {
+    String outputString = "";
+    
+    HashSet<String> printed_keys = new HashSet<String>();
+    
+    // First print all the dense feature names in order
+    for (String key: Decoder.dense_feature_names) {
+      float value = features.containsKey(key) ? features.get(key) : 0.0f;
+      outputString += String.format("%s=%.3f ", key.replaceAll("_", "-"), value);
+      printed_keys.add(key);
+    }
+    
+    // Now print the sparse features
+    ArrayList<String> keys = new ArrayList<String>(features.keySet());
+    Collections.sort(keys);
+    for (String key: keys) {
+      if (! printed_keys.contains(key)) {
+        float value = features.get(key);
+        if (key.equals("OOVPenalty"))
+          // force moses to see it as sparse
+          key = "OOV_Penalty";
+        outputString += String.format("%s=%.3f ", key, value);
+      }
+    }
+    return outputString.trim();
+  }
+    
+  /***
    * Outputs a list of feature names. All dense features are printed. Feature names are printed
    * in the order they were read in.
    */
+  @Override
   public String toString() {
     String outputString = "";
-
-    for (String key: Decoder.feature_names) {
-      if (features.containsKey(key) || isDense(key)) {
-        float value = features.containsKey(key) ? features.get(key) : 0.0f;
-        outputString += String.format("%s%s=%.3f", (outputString.length() > 0) ? " " : "", key, value);
-      }
+    
+    HashSet<String> printed_keys = new HashSet<String>();
+    
+    // First print all the dense feature names in order
+    for (String key: Decoder.dense_feature_names) {
+      float value = features.containsKey(key) ? features.get(key) : 0.0f;
+      outputString += String.format("%s=%.3f ", key, value);
+      printed_keys.add(key);
     }
     
-    return outputString;
+    // Now print the rest of the features
+    ArrayList<String> keys = new ArrayList<String>(features.keySet());
+    Collections.sort(keys);
+    for (String key: keys)
+      if (! printed_keys.contains(key))
+        outputString += String.format("%s=%.3f ", key, features.get(key));
+
+    return outputString.trim();
   }
 
   public static boolean isDense(String feature) {
-    return feature.startsWith("tm_") || feature.startsWith("lm_") || feature.equals("WordPenalty");
+    return feature.startsWith("tm_") || feature.startsWith("lm_") || feature.equals("WordPenalty")
+        || feature.equals("Distortion") || feature.equals("PhrasePenalty");
   }
 }

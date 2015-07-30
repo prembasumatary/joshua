@@ -6,17 +6,21 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.File;
 import java.nio.charset.Charset;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
 import java.util.zip.GZIPInputStream;
+import java.util.zip.ZipException;
+
+import joshua.decoder.Decoder;
 
 /**
  * This class provides an Iterator interface to a BufferedReader. This covers the most common
  * use-cases for reading from files without ugly code to check whether we got a line or not.
  * 
  * @author wren ng thornton <wren@users.sourceforge.net>
- * @version $LastChangedDate: 2009-03-26 15:06:57 -0400 (Thu, 26 Mar 2009) $
+ * @author Matt Post <post@cs.jhu.edu>
  */
 public class LineReader implements Reader<String> {
 
@@ -26,24 +30,63 @@ public class LineReader implements Reader<String> {
    */
   private static final Charset FILE_ENCODING = Charset.forName("UTF-8");
 
+  /*
+   * The reader and its underlying input stream. We need to keep a hold of the underlying
+   * input stream so that we can query how many raw bytes it's read (for a generic progress
+   * meter that works across GZIP'ed and plain text files).
+   */
   private BufferedReader reader;
+  private ProgressInputStream rawStream;
+
   private String buffer;
   private IOException error;
 
   private int lineno = 0;
+  
+  private boolean display_progress = false;
+  
+  private int progress = 0;
 
   // ===============================================================
   // Constructors and destructors
   // ===============================================================
 
   /**
-   * Opens a file for iterating line by line. If the file name ends in ".gz" then we automatically
-   * open it with GZIP. File encoding is assumed to be UTF-8.
+   * Opens a file for iterating line by line. The special "-" filename can be used to specify
+   * STDIN. GZIP'd files are tested for automatically.
    * 
-   * @param filename the file to be opened
+   * @param filename the file to be opened ("-" for STDIN)
    */
   public LineReader(String filename) throws IOException {
-    this(LineReader.getInputStream(filename));
+    
+    display_progress = (Decoder.VERBOSE >= 1);
+    
+    progress = 0;
+    
+    InputStream stream = null; 
+    long totalBytes = -1;
+    if (filename.equals("-")) {
+      rawStream = null;
+      stream = new FileInputStream(FileDescriptor.in);
+    } else {
+      totalBytes = new File(filename).length();
+      rawStream = new ProgressInputStream(new FileInputStream(filename), totalBytes);
+      
+      try {
+        stream = new GZIPInputStream(rawStream);
+      } catch (ZipException e) {
+        // GZIP ate a byte, so reset
+        rawStream.close();
+        stream = rawStream = new ProgressInputStream(new FileInputStream(filename), totalBytes);
+      }
+    } 
+    
+    this.reader = new BufferedReader(new InputStreamReader(stream, FILE_ENCODING));
+  }
+  
+  public LineReader(String filename, boolean show_progress) throws IOException {
+    this(filename);
+    display_progress = (Decoder.VERBOSE >= 1 && show_progress);
   }
 
 
@@ -52,40 +95,18 @@ public class LineReader implements Reader<String> {
    */
   public LineReader(InputStream in) {
     this.reader = new BufferedReader(new InputStreamReader(in, FILE_ENCODING));
+    display_progress = false;
   }
-
-
+  
   /**
-   * Uses a BufferedReader for iterating line by line.
-   */
-  public LineReader(BufferedReader reader) {
-    this.reader = reader;
-  }
-
-
-  /**
-   * Returns an InputStream for a filename, using Joshua's canonical means for interpreting that
-   * name (e.g\ detecting gzipped files). This is used by the LineReader constructor that accepts a
-   * String argument.
+   * Chain to the underlying {@link ProgressInputStream}. 
    * 
-   * @deprecated This method is provided in order for {@link joshua.decoder.DecoderThread} to open
-   *             files in the canonical way for handing off to
-   *             {@link joshua.decoder.segment_file.SegmentFileParser}. The
-   *             <code>SegmentFileParser</code> interface can't be made more liberal (e.g. to accept
-   *             a {@link java.io.Reader}) because {@link javax.xml.parsers.SAXParser} can't parse
-   *             that argument and no common {@link java.io.Reader} gives access to the underlying
-   *             <code>InputStream</code>. This method is considered a hack which should be removed
-   *             once a better solution presents itself.
+   * @return an integer from 0..100, indicating how much of the file has been read.
    */
-  @Deprecated
-  public static final InputStream getInputStream(String filename) throws IOException {
-    FileInputStream fis =
-        (filename.equals("-")) ? new FileInputStream(FileDescriptor.in) : new FileInputStream(
-            filename);
-    return (filename.endsWith(".gz") ? new GZIPInputStream(fis) : fis);
+  public int progress() {
+    return rawStream == null ? 0 : rawStream.progress();
   }
-
-
+  
   /**
    * This method will close the file handle, and will raise any exceptions that occured during
    * iteration. The method is idempotent, and all calls after the first are no-ops (unless the
@@ -230,6 +251,33 @@ public class LineReader implements Reader<String> {
    */
   public String next() throws NoSuchElementException {
     if (this.hasNext()) {
+      if (display_progress) {
+        int newProgress = (reader != null) ? progress() : 100;
+//        System.err.println(String.format("OLD %d NEW %d", progress, newProgress));
+        
+        if (newProgress > progress) {
+          for (int i = progress + 1; i <= newProgress; i++)
+            if (i == 97) {
+              System.err.print("1");
+            } else if (i == 98) {
+              System.err.print("0");
+            } else if (i == 99) {
+              System.err.print("0");
+            } else if (i == 100) {
+              System.err.println("%");
+            } else if (i % 10 == 0) {
+              System.err.print(String.format("%d", i));
+              System.err.flush();
+            } else if ((i - 1) % 10 == 0)
+              ; // skip at 11 since 10, 20, etc take two digits
+            else {
+              System.err.print(".");
+              System.err.flush();
+            }
+          progress = newProgress;
+        }
+      }
+      
       String line = this.buffer;
       this.lineno++;
       this.buffer = null;

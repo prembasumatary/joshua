@@ -1,11 +1,11 @@
 package joshua.decoder.chart_parser;
 
-import java.util.ArrayList;
+import java.util.ArrayList;	
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.logging.Level;
+import java.util.Set;
 import java.util.logging.Logger;
 
 import joshua.decoder.ff.FeatureFunction;
@@ -24,12 +24,11 @@ import joshua.decoder.hypergraph.HyperEdge;
  */
 class Cell {
 
-  // ===============================================================
-  // Private instance fields
-  // ===============================================================
+  // The chart this cell belongs to
   private Chart chart = null;
 
-  private int goalSymID;
+  // The top-level (goal) symbol
+  private int goalSymbol;
 
   // to maintain uniqueness of nodes
   private HashMap<HGNode.Signature, HGNode> nodesSigTbl = new HashMap<HGNode.Signature, HGNode>();
@@ -53,7 +52,7 @@ class Cell {
 
   public Cell(Chart chart, int goalSymID) {
     this.chart = chart;
-    this.goalSymID = goalSymID;
+    this.goalSymbol = goalSymID;
   }
 
   public Cell(Chart chart, int goal_sym_id, int constraint_symbol_id) {
@@ -63,8 +62,18 @@ class Cell {
   // ===============================================================
   // Package-protected methods
   // ===============================================================
+  
+  public Set<Integer> getKeySet() {
+    return superNodesTbl.keySet();
+  }
+  
+  public SuperNode getSuperNode(int lhs) {
+    return superNodesTbl.get(lhs);
+  }
 
   /**
+   * This function loops over all items in the top-level bin (covering the input sentence from
+   * <s> ... </s>), looking for items with the goal LHS. For each of these, 
    * add all the items with GOAL_SYM state into the goal bin the goal bin has only one Item, which
    * itself has many hyperedges only "goal bin" should call this function
    */
@@ -74,13 +83,13 @@ class Cell {
     HGNode goalItem = null;
 
     for (HGNode antNode : bin.getSortedNodes()) {
-      if (antNode.lhs == this.goalSymID) {
+      if (antNode.lhs == this.goalSymbol) {
         float logP = antNode.bestHyperedge.getBestDerivationScore();
         List<HGNode> antNodes = new ArrayList<HGNode>();
         antNodes.add(antNode);
 
         float finalTransitionLogP = ComputeNodeResult.computeFinalCost(featureFunctions, antNodes,
-            0, sentenceLength, null, this.chart.sentenceID());
+            0, sentenceLength, null, this.chart.getSentence());
 
         List<HGNode> previousItems = new ArrayList<HGNode>();
         previousItems.add(antNode);
@@ -89,7 +98,7 @@ class Cell {
             previousItems, null);
 
         if (null == goalItem) {
-          goalItem = new HGNode(0, sentenceLength + 1, this.goalSymID, null, dt, logP
+          goalItem = new HGNode(0, sentenceLength + 1, this.goalSymbol, null, dt, logP
               + finalTransitionLogP);
           this.sortedNodes.add(goalItem);
         } else {
@@ -97,17 +106,6 @@ class Cell {
         }
       } // End if item.lhs == this.goalSymID
     } // End foreach Item in bin.get_sorted_items()
-
-    if (logger.isLoggable(Level.INFO)) {
-      if (null == goalItem) {
-        logger.severe("goalItem is null!");
-        return false;
-      } else {
-        logger.info(String.format("Sentence id=" + this.chart.sentenceID() + "; BestlogP=%.3f",
-            goalItem.bestHyperedge.getBestDerivationScore()));
-      }
-    }
-    ensureSorted();
 
     int itemsInGoalBin = getSortedNodes().size();
     if (1 != itemsInGoalBin) {
@@ -138,7 +136,12 @@ class Cell {
   HGNode addHyperEdgeInCell(ComputeNodeResult result, Rule rule, int i, int j, List<HGNode> ants,
       SourcePath srcPath, boolean noPrune) {
 
-    // System.err.println(String.format("ADD_EDGE(%s,%d,%d", rule, i, j));
+//    System.err.println(String.format("ADD_EDGE(%d-%d): %s", i, j, rule.getRuleString()));
+//    if (ants != null) {
+//      for (int xi = 0; xi < ants.size(); xi++) {
+//        System.err.println(String.format("  -> TAIL %s", ants.get(xi)));
+//      }
+//    }
 
     List<DPState> dpStates = result.getDPStates();
     float pruningEstimate = result.getPruningEstimate();
@@ -175,7 +178,7 @@ class Cell {
 
         newNode.addHyperedgesInNode(oldNode.hyperedges);
         // This will update the HashMap, so that the oldNode is destroyed.
-        addNewNode(newNode, noPrune);
+        addNewNode(newNode);
       } else {// merge new to old, does not trigger pruningItems
         oldNode.addHyperedgesInNode(newNode.hyperedges);
       }
@@ -183,7 +186,7 @@ class Cell {
     } else { // first time item
       this.chart.nAdded++; // however, this item may not be used in the future due to pruning in
       // the hyper-graph
-      addNewNode(newNode, noPrune);
+      addNewNode(newNode);
     }
 
     return newNode;
@@ -198,7 +201,7 @@ class Cell {
     ensureSorted();
     return this.superNodesTbl;
   }
-
+  
   // ===============================================================
   // Private Methods
   // ===============================================================
@@ -208,9 +211,11 @@ class Cell {
    * (2) a new hyperedge's signature matches an old node's signature, but the best-logp of old node
    * is worse than the new hyperedge's logP
    * */
-  private void addNewNode(HGNode node, boolean noPrune) {
+  private void addNewNode(HGNode node) {
     this.nodesSigTbl.put(node.signature(), node); // add/replace the item
     this.sortedNodes = null; // reset the list
+    
+//    System.err.println(String.format("** NEW NODE %s %d %d", Vocabulary.word(node.lhs), node.i, node.j));
 
     // since this.sortedItems == null, this is not necessary because we will always call
     // ensure_sorted to reconstruct the this.tableSuperItems

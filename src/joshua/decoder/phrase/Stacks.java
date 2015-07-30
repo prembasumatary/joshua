@@ -1,10 +1,27 @@
 package joshua.decoder.phrase;
 
+/***
+ * Entry point for phrase-based decoding, analogous to {@link Chart} for the CKY algorithm. This
+ * class organizes all the stacks used for decoding, and is responsible for building them. Stack
+ * construction is stack-centric: that is, we loop over the number of source words in increasing sizes;
+ * at each step of this iteration, we break the search between smaller stack sizes and source-side
+ * phrase sizes.
+ * 
+ * The end result of decoding is a {@link Hypergraph} with the same format as hierarchical decoding.
+ * Phrases are treating as left-branching rules, and the span information (i,j) is overloaded so
+ * that i means nothing and j represents the index of the last-translated source word in each
+ * hypothesis. This means that most hypergraph code can work without modification. The algorithm 
+ * ensures that the coverage vector is consistent but the resulting hypergraph may not be projective,
+ * which is different from the CKY algorithm, which does produce projective derivations. 
+ * 
+ * Lattice decoding is not yet supported (March 2015).
+ */
+
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 
 import joshua.corpus.Span;
+import joshua.decoder.Decoder;
 import joshua.decoder.JoshuaConfiguration;
 import joshua.decoder.chart_parser.ComputeNodeResult;
 import joshua.decoder.ff.FeatureFunction;
@@ -27,18 +44,20 @@ public class Stacks {
 
   private Sentence sentence;
 
-  private PhraseChart chart;
-
   private JoshuaConfiguration config;
 
+  /* Contains all the phrase tables */
+  private PhraseChart chart;
+  
   /**
+   * Entry point. Initialize everything. Create pass-through (OOV) phrase table and glue phrase
+   * table (with start-of-sentence and end-of-sentence rules).
    * 
-   * 
-   * @param context
-   * @param chart
+   * @param sentence
    * @param featureFunctions
+   * @param grammars
+   * @param config
    */
-//  public Stacks(Context context, Chart chart, List<FeatureFunction> featureFunctions) {
   public Stacks(Sentence sentence, List<FeatureFunction> featureFunctions, Grammar[] grammars, 
       JoshuaConfiguration config) {
 
@@ -60,7 +79,7 @@ public class Stacks {
     phraseTables[phraseTables.length - 2].addRule(Hypothesis.END_RULE);
     
     phraseTables[phraseTables.length - 1] = new PhraseTable("oov", config);
-    AbstractGrammar.addOOVRules(phraseTables[phraseTables.length - 1], sentence.intLattice(), featureFunctions, config.true_oovs_only);
+    AbstractGrammar.addOOVRules(phraseTables[phraseTables.length - 1], sentence.getLattice(), featureFunctions, config.true_oovs_only);
     
     this.chart = new PhraseChart(phraseTables, featureFunctions, sentence, config.num_translation_options);
   }
@@ -78,51 +97,60 @@ public class Stacks {
     Future future = new Future(chart);
     stacks = new ArrayList<Stack>();
     
-    // Reservation is critical because pointers to Hypothesis objects are retained as history.
-    //stacks.reserve(chart.SentenceLength() + 2 /* begin/end of sentence */);
-    stacks.clear();
+    // <s> counts as the first word. Pushing null lets us count from one.
     stacks.add(null);
-    for (int i = 1; i <= sentence.length(); i++)
-      stacks.add(new Stack());
 
     // Initialize root hypothesis with <s> context and future cost for everything.
     ComputeNodeResult result = new ComputeNodeResult(this.featureFunctions, Hypothesis.BEGIN_RULE,
         null, -1, 1, null, this.sentence);
-    stacks.get(1).add(new Hypothesis(result.getDPStates(), future.Full()));
+    Stack firstStack = new Stack(featureFunctions, sentence, config);
+    firstStack.add(new Hypothesis(result.getDPStates(), future.Full()));
+    stacks.add(firstStack);
     
-    // Decode with increasing numbers of source words.
+    // Decode with increasing numbers of source words. 
     for (int source_words = 2; source_words <= sentence.length(); ++source_words) {
-      // A vertex represents the root of a trie, e.g., bundled translations of the same source phrase
-      HashMap<Span, HypoStateList> hypotheses = new HashMap<Span, HypoStateList>();
-      // Iterate over stacks to continue from.
-      for (int from_stack = source_words - Math.min(source_words - 1, chart.MaxSourcePhraseLength());
-           from_stack < source_words;
-           ++from_stack) {
-        int phrase_length = source_words - from_stack;
+      Stack targetStack = new Stack(featureFunctions, sentence, config);
+      stacks.add(targetStack);
 
-//        System.err.println(String.format("\n  WORDS %d (STACK %d phrase_length %d)", source_words, from_stack, phrase_length));
+      // Iterate over stacks to continue from.
+      for (int phrase_length = 1; phrase_length <= Math.min(source_words - 1, chart.MaxSourcePhraseLength());
+          phrase_length++) {
+        int from_stack = source_words - phrase_length;
+        Stack tailStack = stacks.get(from_stack);
+        
+        if (Decoder.VERBOSE >= 3)
+          System.err.println(String.format("\n  WORDS %d MAX %d (STACK %d phrase_length %d)", source_words,
+              chart.MaxSourcePhraseLength(), from_stack, phrase_length));
         
         // Iterate over antecedents in this stack.
-        for (Hypothesis ant : stacks.get(from_stack)) {
-//          System.err.println(String.format("  WORDS %d ANT %s", source_words, ant)); 
-          Coverage coverage = ant.GetCoverage();
+        for (Coverage coverage: tailStack.getCoverages()) {
+          ArrayList<Hypothesis> hypotheses = tailStack.get(coverage); 
+          
+          // the index of the starting point of the first possible phrase
           int begin = coverage.firstZero();
+          
+          // the absolute position of the ending spot of the last possible phrase
           int last_end = Math.min(coverage.firstZero() + config.reordering_limit, chart.SentenceLength());
           int last_begin = (last_end > phrase_length) ? (last_end - phrase_length) : 0;
 
-          // We can always go from first_zero because it doesn't create a reordering gap.
-          do {
-            
+          for (begin = coverage.firstZero(); begin <= last_begin; begin++) {
+            if (!coverage.compatible(begin, begin + phrase_length) ||
+                ! permissible(coverage, begin, begin + phrase_length)) {
+              continue;
+            }
+
+            Span span = new Span(begin, begin + phrase_length);
+
             // Don't append </s> until the end
             if (begin == sentence.length() - 1 && source_words != sentence.length()) 
               continue;            
 
             TargetPhrases phrases = chart.getRange(begin, begin + phrase_length);
-            
-            if (phrases == null || !coverage.compatible(begin, begin + phrase_length))
+            if (phrases == null)
               continue;
 
-//            System.err.println(String.format("  Applying %d target phrases over [%d,%d]", phrases.size(), begin, begin + phrase_length));
+            if (Decoder.VERBOSE >= 3)
+              System.err.println(String.format("  Applying %d target phrases over [%d,%d]", phrases.size(), begin, begin + phrase_length));
             
             // TODO: could also compute some number of features here (e.g., non-LM ones)
             // float score_delta = context.GetScorer().transition(ant, phrases, begin, begin + phrase_length);
@@ -130,19 +158,13 @@ public class Stacks {
             // Future costs: remove span to be filled.
             float future_delta = future.Change(coverage, begin, begin + phrase_length);
             
-            Span span = new Span(begin, begin + phrase_length);
-            if (! hypotheses.containsKey(span))
-              hypotheses.put(span, new HypoStateList());
-            
             /* This associates with each span a set of hypotheses that can be extended by
              * phrases from that span. The hypotheses are wrapped in HypoState objects, which
              * augment the hypothesis score with a future cost.
              */
-            hypotheses.get(span).add(new HypoState(ant, future_delta));
-
-            // Enforce the reordering limit on later iterations.
-
-          } while (++begin <= last_begin);
+            Candidate cand = new Candidate(hypotheses, phrases, span, future_delta);
+            targetStack.addCandidate(cand);
+          }
         }
       }
 
@@ -154,35 +176,56 @@ public class Stacks {
        * We seed the chart with the best item in each cube, and then repeatedly pop and extend.
        */
       
-      EdgeGenerator gen = new EdgeGenerator(sentence, featureFunctions, config);
 //      System.err.println(String.format("\nBuilding cube-pruning chart for %d words", source_words));
-      for (Span pair : hypotheses.keySet()) {
-        HypoStateList hypos = hypotheses.get(pair);
-        if (hypos.isEmpty())
-          continue;
-        // Sorts the hypotheses, since we now know that we're done adding them
-        hypos.finish();
-        
-        TargetPhrases phrases = chart.getRange(pair.start, pair.end);
 
-//        System.err.println(String.format("  Span %s hypotheses %s phrases %s", pair, hypos.size(), phrases.size()));
-
-        Candidate cand = new Candidate(hypos, phrases, pair);
-        gen.addCandidate(cand);
-      }
-
-      Stack stack = stacks.get(source_words);
-      EdgeOutput output = new EdgeOutput(stack);
-      gen.Search(output);
+      targetStack.search();
     }
     
-    System.err.println(String.format("[%d] Search took %.3f seconds", sentence.id(),
+    Decoder.LOG(1, String.format("Input %d: Search took %.3f seconds", sentence.id(),
         (System.currentTimeMillis() - startTime) / 1000.0f));
     
-    //    System.err.println("Stack(): END: " + end);
     return createGoalNode();
   }
     
+  /**
+   * Enforces reordering constraints. Our version of Moses' ReorderingConstraint::Check() and
+   * SearchCubePruning::CheckDistortion(). 
+   * 
+   * @param coverage
+   * @param begin
+   * @param i
+   * @return
+   */
+  private boolean permissible(Coverage coverage, int begin, int end) {
+    int firstZero = coverage.firstZero();
+
+    if (config.reordering_limit < 0)
+      return true;
+    
+    /* We can always start with the first zero since it doesn't create a reordering gap
+     */
+    if (begin == firstZero)
+      return true;
+
+    /* If a gap is created by applying this phrase, make sure that you can reach the first
+     * zero later on without violating the distortion constraint.
+     */
+    if (end - firstZero > config.reordering_limit) {
+      return false;
+    }
+    
+    return true;
+  }
+
+
+  /**
+   * Searches through the goal stack, calling the final transition function on each node, and then returning
+   * the best item. Usually the final transition code doesn't add anything, because all features
+   * have already computed everything they need to. The standard exception is language models that
+   * have not yet computed their prefix probabilities (which is not the case with KenLM, the default).
+   * 
+   * @return
+   */
   private HyperGraph createGoalNode() {
     Stack lastStack = stacks.get(sentence.length());
     
@@ -191,7 +234,7 @@ public class Stacks {
       List<HGNode> tailNodes = new ArrayList<HGNode>();
       tailNodes.add(hyp);
       
-      float finalTransitionScore = ComputeNodeResult.computeFinalCost(featureFunctions, tailNodes, 0, sentence.length(), null, sentence.id());
+      float finalTransitionScore = ComputeNodeResult.computeFinalCost(featureFunctions, tailNodes, 0, sentence.length(), null, sentence);
 
       if (null == this.end)
         this.end = new Hypothesis(null, score + finalTransitionScore, hyp, sentence.length(), null);
@@ -200,34 +243,6 @@ public class Stacks {
       end.addHyperedgeInNode(edge);
     }
     
-    this.end = lastStack.isEmpty() ? null : lastStack.get(0);
-    
     return new HyperGraph(end, -1, -1, this.sentence);
-  }
-
-  
-  /**
-   * Creates a new hypothesis and adds it to the stack.
-   * 
-   * Duplication-checking is done elsewhere. For regular decoding, an {@link EdgeOutput} keeps
-   * track of added edges and combines the last item, after this call completes.
-   * 
-   * @param complete the candidate used to build the hypothesis
-   * @param out the stack to place it on
-   */
-  public static void AppendToStack(Candidate complete, Stack out) {
-    
-    Hypothesis h = new Hypothesis(complete);
-    out.add(h);
-
-    /*
-    out.add(new Hypothesis(0, // complete.CompletedState().right,
-          complete.GetScore(), // TODO: call scorer to adjust for last of lexro?
-          (Hypothesis)(complete.NT()[0].End().get()),
-          source_range.start,
-          source_range.end,
-          (Phrase)complete.NT()[1].End().get()));
-     */
-//    out.add(h);
   }
 }

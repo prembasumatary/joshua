@@ -6,9 +6,11 @@ import java.io.StringWriter;
 import java.util.List;
 
 import joshua.decoder.ff.FeatureFunction;
-import joshua.decoder.ff.lm.KenLMFF;
+import joshua.decoder.ff.lm.StateMinimizingLanguageModel;
 import joshua.decoder.hypergraph.HyperGraph;
 import joshua.decoder.hypergraph.KBestExtractor;
+import joshua.decoder.hypergraph.ViterbiExtractor;
+import joshua.decoder.io.DeNormalize;
 import joshua.decoder.segment_file.Sentence;
 
 /**
@@ -28,7 +30,7 @@ public class Translation {
    */
   private String output = null;
 
-  public Translation(Sentence source, HyperGraph hypergraph, KBestExtractor kBestExtractor,
+  public Translation(Sentence source, HyperGraph hypergraph, 
       List<FeatureFunction> featureFunctions, JoshuaConfiguration joshuaConfiguration) {
     this.source = source;
 
@@ -46,36 +48,66 @@ public class Translation {
         // We must put this weight as zero, otherwise we get an error when we try to retrieve it
         // without checking
         Decoder.weights.put("BLEU", 0);
-        kBestExtractor.lazyKBestExtractOnHG(hypergraph, joshuaConfiguration.topN, out);
 
-        if (joshuaConfiguration.rescoreForest) {
-          Decoder.weights.put("BLEU", joshuaConfiguration.rescoreForestWeight);
+        String best = ViterbiExtractor.extractViterbiString(hypergraph.goalNode).trim();
+        best = best.substring(best.indexOf(' ') + 1, best.lastIndexOf(' '));
+        
+        Decoder.LOG(1, String.format("Translation %d: %.3f %s", source.id(), hypergraph.goalNode.getScore(),
+            best));
+        
+        if (joshuaConfiguration.topN == 0) {
+          
+          /*
+           * Setting topN to 0 turns off k-best extraction, in which case we need to parse through
+           * the output-string, with the understanding that we can only substitute variables for the
+           * output string, sentence number, and model score.
+           */
+          String translation = joshuaConfiguration.outputFormat.replace("%s", best)
+              .replace("%S", DeNormalize.processSingleLine(best))
+              .replace("%c", String.format("%.3f", hypergraph.goalNode.getScore()))
+              .replace("%i", String.format("%d", source.id()));
+
+          out.write(translation);
+          out.newLine();
+        } else  {
+          KBestExtractor kBestExtractor = new KBestExtractor(source, featureFunctions, Decoder.weights, false, joshuaConfiguration);
           kBestExtractor.lazyKBestExtractOnHG(hypergraph, joshuaConfiguration.topN, out);
 
-          Decoder.weights.put("BLEU", -joshuaConfiguration.rescoreForestWeight);
-          kBestExtractor.lazyKBestExtractOnHG(hypergraph, joshuaConfiguration.topN, out);
+          if (joshuaConfiguration.rescoreForest) {
+            Decoder.weights.put("BLEU", joshuaConfiguration.rescoreForestWeight);
+            kBestExtractor.lazyKBestExtractOnHG(hypergraph, joshuaConfiguration.topN, out);
+
+            Decoder.weights.put("BLEU", -joshuaConfiguration.rescoreForestWeight);
+            kBestExtractor.lazyKBestExtractOnHG(hypergraph, joshuaConfiguration.topN, out);
+          }
         }
 
         float seconds = (float) (System.currentTimeMillis() - startTime) / 1000.0f;
-        System.err.println(String.format("[%d] %d-best extraction took %.3f seconds", id(),
+        Decoder.LOG(1, String.format("Input %d: %d-best extraction took %.3f seconds", id(),
             joshuaConfiguration.topN, seconds));
 
       } else {
+        
+        if (source.isEmpty()) {
+          // Empty output just gets echoed back
+          out.write("");
+          out.newLine();
+        } else {
+          // Failed translations get empty formatted outputs
+          // @formatter:off
+          String outputString = joshuaConfiguration.outputFormat
+              .replace("%s", source.source())
+              .replace("%e", "")
+              .replace("%S", "")
+              .replace("%t", "()")
+              .replace("%i", Integer.toString(source.id()))
+              .replace("%f", "")
+              .replace("%c", "0.000");
+          // @formatter:on
 
-        // There is no output for the given input (e.g. blank line)
-        // @formatter:off
-        String outputString = joshuaConfiguration.outputFormat
-            .replace("%s", source.source())
-            .replace("%e", "")
-            .replace("%S", "")
-            .replace("%t", "")
-            .replace("%i", Integer.toString(source.id()))
-            .replace("%f", "")
-            .replace("%c", "0.000");
-        // @formatter:on
-
-        out.write(outputString);
-        out.newLine();
+          out.write(outputString);
+          out.newLine();
+        }
       }
 
       out.flush();
@@ -89,8 +121,8 @@ public class Translation {
      * objects for this sentence.
      */
     for (FeatureFunction feature : featureFunctions) {
-      if (feature instanceof KenLMFF) {
-        ((KenLMFF) feature).destroyPool(getSourceSentence().id());
+      if (feature instanceof StateMinimizingLanguageModel) {
+        ((StateMinimizingLanguageModel) feature).destroyPool(getSourceSentence().id());
         break;
       }
     }

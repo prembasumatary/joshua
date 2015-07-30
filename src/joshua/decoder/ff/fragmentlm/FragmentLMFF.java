@@ -8,16 +8,15 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Stack;
 
+import joshua.decoder.JoshuaConfiguration;
 import joshua.decoder.chart_parser.SourcePath;
 import joshua.decoder.ff.FeatureVector;
-import joshua.decoder.ff.NonLocalFF;
+import joshua.decoder.ff.StatefulFF;
 import joshua.decoder.ff.state_maintenance.DPState;
-import joshua.decoder.ff.tm.BilingualRule;
 import joshua.decoder.ff.tm.Rule;
 import joshua.decoder.ff.tm.format.HieroFormatReader;
 import joshua.decoder.hypergraph.HGNode;
 import joshua.decoder.hypergraph.HyperEdge;
-import joshua.decoder.hypergraph.KBestExtractor.DerivationState;
 import joshua.decoder.segment_file.Sentence;
 
 /**
@@ -49,7 +48,7 @@ import joshua.decoder.segment_file.Sentence;
  * 
  * @author Matt Post <post@cs.jhu.edu>
  */
-public class FragmentLMFF extends NonLocalFF {
+public class FragmentLMFF extends StatefulFF {
 
   /*
    * When building a fragment from a rule rooted in the hypergraph, this parameter determines how
@@ -91,39 +90,15 @@ public class FragmentLMFF extends NonLocalFF {
    * @param name
    * @param stateComputer
    */
-  public FragmentLMFF(FeatureVector weights, String argString) {
-    super(weights, "FragmentLMFF");
+  public FragmentLMFF(FeatureVector weights, String[] args, JoshuaConfiguration config) {
+    super(weights, "FragmentLMFF", args, config);
 
     lmFragments = new HashMap<String, ArrayList<Tree>>();
 
-    // Process the args for the owner, minimum, and maximum.
-    String args[] = argString.split("\\s+");
-    int i = 0;
-    try {
-      while (i < args.length) {
-        if (args[i].startsWith("-")) {
-          String key = args[i].substring(1);
-          if (key.equals("lm")) {
-            fragmentLMFile = args[i + 1];
-          } else if (key.equals("build-depth") || key.equals("depth")) {
-            BUILD_DEPTH = Integer.parseInt(args[i + 1]);
-          } else if (key.equals("max-depth")) {
-            MAX_DEPTH = Integer.parseInt(args[i + 1]);
-          } else if (key.equals("min-lex-depth")) {
-            MIN_LEX_DEPTH = Integer.parseInt(args[i + 1]);
-          } else {
-            System.err.println(String.format("* FATAL: invalid FragmentLMFF argument '%s'", key));
-            System.exit(1);
-          }
-          i += 2;
-        } else {
-          i++;
-        }
-      }
-    } catch (ArrayIndexOutOfBoundsException e) {
-      System.err.println("* FATAL: Error processing FragmentLMFF features");
-      System.exit(1);
-    }
+    fragmentLMFile = parsedArgs.get("lm");
+    BUILD_DEPTH = Integer.parseInt(parsedArgs.get("build-depth"));
+    MAX_DEPTH = Integer.parseInt(parsedArgs.get("max-depth"));
+    MIN_LEX_DEPTH = Integer.parseInt(parsedArgs.get("min-lex-depth"));
 
     /* Read in the language model fragments */
     try {
@@ -172,38 +147,25 @@ public class FragmentLMFF extends NonLocalFF {
     numFragments++;
   }
   
-  public DPState compute(Rule rule, List<HGNode> tailNodes, int i, int j, SourcePath sourcePath,
-      int sentID, Accumulator acc) {
-    throw new RuntimeException("THIS SHOULD NEVER BE CALLED");
-  }
-
-  /*
+  /**
    * This function computes the features that fire when the current rule is applied. The features
-   * that fire are any LM fragments that match the tree fragment that is defined by the current
-   * rule, its tail nodes, and a DerivationState object denoting the k-best deconstruction of the
-   * tree to explore. The fragments are matched against the root of this tree, and also against any
-   * internal nodes.
+   * that fire are any LM fragments that match the fragment associated with the current rule. LM
+   * fragments may recurse over the tail nodes, following 1-best backpointers until the fragment
+   * either matches or fails.
    */
   @Override
-  public DPState compute(DerivationState derivationState, int i, int j, SourcePath sourcePath,
+  public DPState compute(Rule rule, List<HGNode> tailNodes, int i, int j, SourcePath sourcePath, 
       Sentence sentence, Accumulator acc) {
 
-    if (derivationState == null) {
-      return null;
-    }
-    
-    System.err.println(String.format("RULE: %s  RANKS: %s", derivationState.edge.getRule(), derivationState));
-    
     /*
-     * Compute the tree from applying the current rule to the list of tail nodes over the
-     * kth-best derivation over the hyperforest.
+     * Get the fragment associated with the target side of this rule.
      * 
-     * (This could be done more efficiently. For example, just build the tree fragment once and then
+     * This could be done more efficiently. For example, just build the tree fragment once and then
      * pattern match against it. This would circumvent having to build the tree possibly once every
-     * time you try to apply a rule.)
+     * time you try to apply a rule.
      */
-    Tree baseTree = Tree.buildTree(derivationState, BUILD_DEPTH);
-    
+    Tree baseTree = Tree.buildTree(rule, tailNodes, BUILD_DEPTH);
+
     Stack<Tree> nodeStack = new Stack<Tree>();
     nodeStack.add(baseTree);
     while (!nodeStack.empty()) {
@@ -213,11 +175,11 @@ public class FragmentLMFF extends NonLocalFF {
 
       if (lmFragments.get(tree.getRule()) != null) {
         for (Tree fragment : lmFragments.get(tree.getRule())) {
-           System.err.println(String.format("Does\n  %s match\n  %s??\n  -> %s", fragment, tree,
-           match(fragment, tree)));
+//           System.err.println(String.format("Does\n  %s match\n  %s??\n  -> %s", fragment, tree,
+//           match(fragment, tree)));
 
           if (fragment.getLabel() == tree.getLabel() && match(fragment, tree)) {
-             System.err.println(String.format("  FIRING: matched %s against %s", fragment, tree));
+//             System.err.println(String.format("  FIRING: matched %s against %s", fragment, tree));
             acc.add(fragment.escapedString(), 1);
             if (OPTS_DEPTH)
               if (fragment.isLexicalized())
@@ -229,7 +191,8 @@ public class FragmentLMFF extends NonLocalFF {
       }
 
       // We also need to try matching rules against internal nodes of the fragment corresponding to
-      // this rule
+      // this
+      // rule
       if (tree.getChildren() != null)
         for (Tree childNode : tree.getChildren()) {
           if (!childNode.isBoundary())
@@ -237,7 +200,7 @@ public class FragmentLMFF extends NonLocalFF {
         }
     }
 
-    return null;
+    return new FragmentState(baseTree);
   }
 
   /**
@@ -278,43 +241,98 @@ public class FragmentLMFF extends NonLocalFF {
     return true;
   }
 
+  @Override
+  public DPState computeFinal(HGNode tailNodes, int i, int j, SourcePath sourcePath, Sentence sentence,
+      Accumulator acc) {
+    // TODO Auto-generated method stub
+    return null;
+  }
+
+  @Override
+  public float estimateFutureCost(Rule rule, DPState state, Sentence sentence) {
+    // TODO Auto-generated method stub
+    return 0;
+  }
+
+  @Override
+  public float estimateCost(Rule rule, Sentence sentence) {
+    // TODO Auto-generated method stub
+    return 0;
+  }
+  
   public static void main(String[] args) {
     /* Add an LM fragment, then create a dummy multi-level hypergraph to match the fragment against. */
     // FragmentLMFF fragmentLMFF = new FragmentLMFF(new FeatureVector(), (StateComputer) null, "");
     FragmentLMFF fragmentLMFF = new FragmentLMFF(new FeatureVector(),
-        "-lm test/fragments.txt -map test/mapping.txt");
-
+        new String[] {"-lm", "test/fragments.txt", "-map", "test/mapping.txt"}, null);
+  
     Tree fragment = Tree.fromString("(S NP (VP (VBD \"said\") SBAR) (. \".\"))");
-
-    BilingualRule ruleS = new HieroFormatReader()
+  
+    Rule ruleS = new HieroFormatReader()
         .parseLine("[S] ||| the man [VP,1] [.,2] ||| the man [VP,1] [.,2] ||| 0");
-    BilingualRule ruleVP = new HieroFormatReader()
+    Rule ruleVP = new HieroFormatReader()
         .parseLine("[VP] ||| said [SBAR,1] ||| said [SBAR,1] ||| 0");
-    BilingualRule ruleSBAR = new HieroFormatReader()
+    Rule ruleSBAR = new HieroFormatReader()
         .parseLine("[SBAR] ||| that he was done ||| that he was done ||| 0");
-    BilingualRule rulePERIOD = new HieroFormatReader().parseLine("[.] ||| . ||| . ||| 0");
-
+    Rule rulePERIOD = new HieroFormatReader().parseLine("[.] ||| . ||| . ||| 0");
+  
     ruleS.setOwner(0);
     ruleVP.setOwner(0);
     ruleSBAR.setOwner(0);
     rulePERIOD.setOwner(0);
-
+  
     HyperEdge edgeSBAR = new HyperEdge(ruleSBAR, 0.0f, 0.0f, null, (SourcePath) null);
-
+  
     HGNode nodeSBAR = new HGNode(3, 7, ruleSBAR.getLHS(), null, edgeSBAR, 0.0f);
     ArrayList<HGNode> tailNodesVP = new ArrayList<HGNode>();
     Collections.addAll(tailNodesVP, nodeSBAR);
     HyperEdge edgeVP = new HyperEdge(ruleVP, 0.0f, 0.0f, tailNodesVP, (SourcePath) null);
     HGNode nodeVP = new HGNode(2, 7, ruleVP.getLHS(), null, edgeVP, 0.0f);
-
+  
     HyperEdge edgePERIOD = new HyperEdge(rulePERIOD, 0.0f, 0.0f, null, (SourcePath) null);
     HGNode nodePERIOD = new HGNode(7, 8, rulePERIOD.getLHS(), null, edgePERIOD, 0.0f);
-
+  
     ArrayList<HGNode> tailNodes = new ArrayList<HGNode>();
     Collections.addAll(tailNodes, nodeVP, nodePERIOD);
-
+  
     Tree tree = Tree.buildTree(ruleS, tailNodes, 1);
     boolean matched = fragmentLMFF.match(fragment, tree);
     System.err.println(String.format("Does\n  %s match\n  %s??\n  -> %s", fragment, tree, matched));
   }
+
+  /**
+   * Maintains a state pointer used by KenLM to implement left-state minimization. 
+   * 
+   * @author Matt Post <post@cs.jhu.edu>
+   * @author Juri Ganitkevitch <juri@cs.jhu.edu>
+   */
+  public class FragmentState extends DPState {
+
+    private Tree tree = null;
+
+    public FragmentState(Tree tree) {
+      this.tree = tree;
+    }
+
+    /**
+     * Every tree is unique.
+     * 
+     * Some savings could be had here if we grouped together items with the same string.
+     */
+    @Override
+    public int hashCode() {
+      return tree.hashCode();
+    }
+
+    @Override
+    public boolean equals(Object other) {
+      return (other instanceof FragmentState && this == other);
+    }
+
+    @Override
+    public String toString() {
+      return String.format("[FragmentState %s]", tree);
+    }
+  }
+
 }

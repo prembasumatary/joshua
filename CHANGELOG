@@ -1,3 +1,75 @@
+6.0.4 (June 15, 2015)
+=====================
+
+- Local MIRA implementation (now the default for the pipeline; Moses' kbmira available
+  with '--tuner kbmira')
+- PRO tuning implementation restored
+- Alignment in pipeline parallelized across chunks (up to --threads)
+- Better integration for class-based LMs
+- Bugfixes in pipeline script and elsewhere
+- Logic for KenLM/lmplz boost compile improved
+
+6.0.3 (June 1, 2015)
+====================
+
+- New, more versatile run bundler for creating language packs
+- Restructuring of the pipeline. Now uses the run bundler to build models
+  for tuning and testing, and no longer directly supports multiple optimizer
+  runs
+- Split out ZMERT / PRO tuning script into run_zmert.py, to facilitate 
+  running ZMERT independently
+- Fix to ivy (dependency download tool) for offline and cached downloads
+- Other bug fixes and changes
+
+6.0.2 (April 10, 2015)
+======================
+
+- Restored compatibility with Moses 3.0 tuning regime (tuning with kbmira 
+  now requires Moses 3.0)
+- Sparse feature support in grammar file, which enables compatibility with 
+  PPDB grammars (paraphrase.org)
+- Bugfixes and other minor improvements
+
+6.0.1 (March 6, 2015)
+=====================
+
+Bugfixes:
+
+- Maximum phrase length was off by one (short)
+
+Improvements
+
+- **Phrase-table packing for Moses grammars**
+- BerkeleyLM now detects compressed files automatically
+- output-format now respected when top-n = 0 (with a subset of variables)
+- key + value format for specifying TMs
+- Better error messages and other minor improvements	
+	
+6.0 (February 4, 2015)
+======================
+
+Joshua 6.0 introduces many extensions and improvements. They include:
+
+- Phrase-based decoder
+
+  Joshua now includes an unlexicalized phrase-based decoder. It reads
+  Moses phrase tables directly. Support for training phrase-based
+  models is included in the pipeline (via callouts to Moses)
+
+- Significant speed improvements
+
+  Joshua is a lot faster (TODO: quantify). The phrase-based decoder is
+  on roughly par with Moses in terms of decoding speed: slower for
+  small beam sizes and faster for larger (above 200). GHKM decoding is
+  significantly faster as a result of the dot chart removal due to
+  Sennrich (2014).
+
+- Numerous bugfixes and other improvements
+
+  Dynamic lattice-based OOV segmenting, improved progress meters and
+  verbose output handling, support for alignments in phrase table,
+  latest KenLM (including lmplz)
+	
 5.0 (August 16, 2013)
 ===================
 

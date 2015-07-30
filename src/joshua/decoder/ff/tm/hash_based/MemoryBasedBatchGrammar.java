@@ -1,22 +1,23 @@
 package joshua.decoder.ff.tm.hash_based;
 
-import java.io.IOException;
+import java.io.IOException;	
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
-import java.util.logging.Level;
-import java.util.logging.Logger;
 
 import joshua.corpus.Vocabulary;
+import joshua.decoder.Decoder;
 import joshua.decoder.JoshuaConfiguration;
+import joshua.decoder.JoshuaConfiguration.OOVItem;
 import joshua.decoder.ff.FeatureFunction;
 import joshua.decoder.ff.tm.AbstractGrammar;
-import joshua.decoder.ff.tm.BilingualRule;
-import joshua.decoder.ff.tm.GrammarReader;
 import joshua.decoder.ff.tm.Rule;
+import joshua.decoder.ff.tm.GrammarReader;
 import joshua.decoder.ff.tm.Trie;
 import joshua.decoder.ff.tm.format.HieroFormatReader;
-import joshua.decoder.ff.tm.format.MosesFormatReader;
+import joshua.decoder.ff.tm.format.PhraseFormatReader;
 import joshua.decoder.ff.tm.format.SamtFormatReader;
+import joshua.util.FormatUtils;
 
 /**
  * This class implements a memory-based bilingual BatchGrammar.
@@ -46,20 +47,14 @@ public class MemoryBasedBatchGrammar extends AbstractGrammar {
   /* The file containing the grammar. */
   private String grammarFile;
 
-  private GrammarReader<BilingualRule> modelReader;
+  private GrammarReader<Rule> modelReader;
   
-  /* Maximum source phrase length */
-  protected int maxSourcePhraseLength = 0;
-
   /* Whether the grammar's rules contain regular expressions. */
   private boolean isRegexpGrammar = false;
 
   // ===============================================================
   // Static Fields
   // ===============================================================
-
-  /** Logger for this class. */
-  private static final Logger logger = Logger.getLogger(MemoryBasedBatchGrammar.class.getName());
 
   // ===============================================================
   // Constructors
@@ -76,7 +71,7 @@ public class MemoryBasedBatchGrammar extends AbstractGrammar {
     this.owner = Vocabulary.id(owner);
   }
 
-  public MemoryBasedBatchGrammar(GrammarReader<BilingualRule> gr,JoshuaConfiguration joshuaConfiguration) {
+  public MemoryBasedBatchGrammar(GrammarReader<Rule> gr,JoshuaConfiguration joshuaConfiguration) {
     // this.defaultOwner = Vocabulary.id(defaultOwner);
     // this.defaultLHS = Vocabulary.id(defaultLHSSymbol);
     this(joshuaConfiguration);
@@ -84,7 +79,7 @@ public class MemoryBasedBatchGrammar extends AbstractGrammar {
   }
 
   public MemoryBasedBatchGrammar(String formatKeyword, String grammarFile, String owner,
-      String defaultLHSSymbol, int spanLimit,JoshuaConfiguration joshuaConfiguration) throws IOException {
+      String defaultLHSSymbol, int spanLimit, JoshuaConfiguration joshuaConfiguration) throws IOException {
 
     this(joshuaConfiguration);
     this.owner = Vocabulary.id(owner);
@@ -97,28 +92,27 @@ public class MemoryBasedBatchGrammar extends AbstractGrammar {
     this.modelReader = createReader(formatKeyword, grammarFile);
     if (modelReader != null) {
       modelReader.initialize();
-      for (BilingualRule rule : modelReader)
+      for (Rule rule : modelReader)
         if (rule != null) {
           addRule(rule);
         }
     } else {
-      if (logger.isLoggable(Level.WARNING))
-        logger.warning("Couldn't create a GrammarReader for file " + grammarFile + " with format "
+      Decoder.LOG(1, "Couldn't create a GrammarReader for file " + grammarFile + " with format "
             + formatKeyword);
     }
 
     this.printGrammar();
   }
 
-  protected GrammarReader<BilingualRule> createReader(String format, String grammarFile) {
+  protected GrammarReader<Rule> createReader(String format, String grammarFile) {
 
     if (grammarFile != null) {
       if ("hiero".equals(format) || "thrax".equals(format) || "regexp".equals(format)) {
         return new HieroFormatReader(grammarFile);
       } else if ("samt".equals(format)) {
         return new SamtFormatReader(grammarFile);
-      } else if ("phrase".equals(format)) {
-        return new MosesFormatReader(grammarFile);
+      } else if ("phrase".equals(format) || "moses".equals(format)) {
+        return new PhraseFormatReader(grammarFile, format.equals("moses"));
       } else {
         throw new RuntimeException(String.format("* FATAL: unknown grammar format '%s'", format));
       }
@@ -162,15 +156,14 @@ public class MemoryBasedBatchGrammar extends AbstractGrammar {
     return this.root;
   }
 
-
   /**
-   * Adds a rule to the grammar
+   * Adds a rule to the grammar.
    */
-  public void addRule(BilingualRule rule) {
+  public void addRule(Rule rule) {
 
     // TODO: Why two increments?
     this.qtyRulesRead++;
-
+    
 //    if (owner == -1) {
 //      System.err.println("* FATAL: MemoryBasedBatchGrammar::addRule(): owner not set for grammar");
 //      System.exit(1);
@@ -185,8 +178,6 @@ public class MemoryBasedBatchGrammar extends AbstractGrammar {
     
     for (int k = 0; k < french.length; k++) {
       int curSymID = french[k];
-
-      if (logger.isLoggable(Level.FINEST)) logger.finest("Matching: " + curSymID);
 
       /*
        * Note that the nonTerminal symbol in the french is not cleaned (i.e., will be sth like
@@ -207,7 +198,6 @@ public class MemoryBasedBatchGrammar extends AbstractGrammar {
       pos = nextLayer;
     }
 
-
     // === add the rule into the trie node
     if (!pos.hasRules()) {
       pos.ruleBin = new MemoryBasedRuleBin(rule.getArity(), rule.getFrench());
@@ -217,7 +207,8 @@ public class MemoryBasedBatchGrammar extends AbstractGrammar {
   }
 
   protected void printGrammar() {
-    logger.info(String.format("MemoryBasedBatchGrammar: Read %d rules with %d distinct source sides from '%s'", this.qtyRulesRead, this.qtyRuleBins, grammarFile));
+    Decoder.LOG(1,  String.format("MemoryBasedBatchGrammar: Read %d rules with %d distinct source sides from '%s'", 
+        this.qtyRulesRead, this.qtyRuleBins, grammarFile));
   }
 
   /**
@@ -234,23 +225,14 @@ public class MemoryBasedBatchGrammar extends AbstractGrammar {
   public void setRegexpGrammar(boolean value) {
     this.isRegexpGrammar = value;
   }
-  
-  /**
-   * Returns the longest source phrase read.
-   * 
-   * @return the longest source phrase read (nonterminal + terminal symbols).
-   */
-  public int getMaxSourcePhraseLength() {
-    /* We added a nonterminal to all source sides, so subtract that off. */
-    return maxSourcePhraseLength - 1;
-  }
-  
+
   /***
    * Takes an input word and creates an OOV rule in the current grammar for that word.
    * 
    * @param sourceWord
    * @param featureFunctions
    */
+  @Override
   public void addOOVRules(int sourceWord, List<FeatureFunction> featureFunctions) {
     
     // TODO: _OOV shouldn't be outright added, since the word might not be OOV for the LM (but now almost
@@ -261,23 +243,49 @@ public class MemoryBasedBatchGrammar extends AbstractGrammar {
 
     int[] sourceWords = { sourceWord };
     int[] targetWords = { targetWord };
-    final byte[] oovAlignment = { 0, 0 };
+    final String oovAlignment = "0-0";
     
-    if (this.joshuaConfiguration.oov_list != null && this.joshuaConfiguration.oov_list.length != 0) {
-      for (int i = 0; i < this.joshuaConfiguration.oov_list.length; i++) {
-        BilingualRule oovRule = new BilingualRule(
-            Vocabulary.id(this.joshuaConfiguration.oov_list[i]), sourceWords, targetWords, "", 0,
+    if (this.joshuaConfiguration.oovList != null && this.joshuaConfiguration.oovList.size() != 0) {
+      for (OOVItem item: this.joshuaConfiguration.oovList) {
+        Rule oovRule = new Rule(
+            Vocabulary.id(item.label), sourceWords, targetWords, "", 0,
             oovAlignment);
         addRule(oovRule);
         oovRule.estimateRuleCost(featureFunctions);
-        // System.err.println(String.format("ADDING OOV RULE %s", oovRule));
       }
     } else {
       int nt_i = Vocabulary.id(this.joshuaConfiguration.default_non_terminal);
-      BilingualRule oovRule = new BilingualRule(nt_i, sourceWords, targetWords, "", 0,
+      Rule oovRule = new Rule(nt_i, sourceWords, targetWords, "", 0,
           oovAlignment);
       addRule(oovRule);
       oovRule.estimateRuleCost(featureFunctions);
+    }
+  }
+  
+  /**
+   * Adds a default set of glue rules.
+   * 
+   * @param featureFunctions 
+   */
+  public void addGlueRules(ArrayList<FeatureFunction> featureFunctions) {
+    HieroFormatReader reader = new HieroFormatReader();
+
+    String goalNT = FormatUtils.cleanNonterminal(joshuaConfiguration.goal_symbol);
+    String defaultNT = FormatUtils.cleanNonterminal(joshuaConfiguration.default_non_terminal);
+    
+    String[] ruleStrings = new String[] {
+        String.format("[%s] ||| %s ||| %s ||| 0", goalNT, Vocabulary.START_SYM,
+            Vocabulary.START_SYM),
+        String.format("[%s] ||| [%s,1] [%s,2] ||| [%s,1] [%s,2] ||| -1", 
+            goalNT, goalNT, defaultNT, goalNT, defaultNT),
+        String.format("[%s] ||| [%s,1] %s ||| [%s,1] %s ||| 0", 
+            goalNT, goalNT, Vocabulary.STOP_SYM, goalNT, Vocabulary.STOP_SYM)
+    };
+    
+    for (String ruleString: ruleStrings) {
+      Rule rule = reader.parseLine(ruleString);
+      addRule(rule);
+      rule.estimateRuleCost(featureFunctions);
     }
   }
 }

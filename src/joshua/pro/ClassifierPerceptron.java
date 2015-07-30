@@ -2,8 +2,6 @@ package joshua.pro;
 
 import java.util.Vector;
 
-import joshua.corpus.Vocabulary;
-
 // sparse feature representation version
 public class ClassifierPerceptron implements ClassifierInterface {
   @Override
@@ -17,7 +15,6 @@ public class ClassifierPerceptron implements ClassifierInterface {
     double[] sum_lambda = new double[featDim + 1];
     String[] featVal;
 
-    // in ZMERT lambda[0] is not used
     for (int i = 1; i <= featDim; i++) {
       sum_lambda[i] = 0;
       lambda[i] = initialLambda[i];
@@ -41,17 +38,9 @@ public class ClassifierPerceptron implements ClassifierInterface {
         // {
         // numPosSamp++;
         score = 0;
-
-        /*
-         * for( int d=0; d<featDim; d++ ) //inner product { //System.out.printf("%.2f ",
-         * Double.parseDouble(featVal[d])); score += Double.parseDouble(featVal[d]) * lambda[d+1];
-         * //in ZMERT lambda[0] is not used }
-         */
-
         for (int d = 0; d < featVal.length - 1; d++) {
-          feat_info = featVal[d].split("[:=]");
-          int featID = Vocabulary.id(feat_info[0]);
-          score += Double.parseDouble(feat_info[1]) * lambda[featID];
+          feat_info = featVal[d].split(":");
+          score += Double.parseDouble(feat_info[1]) * lambda[Integer.parseInt(feat_info[0])];
         }
 
         label = Double.parseDouble(featVal[featVal.length - 1]);
@@ -60,25 +49,15 @@ public class ClassifierPerceptron implements ClassifierInterface {
         if (score <= bias) // incorrect classification
         {
           numError++;
-
-          /*
-           * for( int d=0; d<featDim; d++ ) { lambda[d+1] += learningRate*label *
-           * Double.parseDouble(featVal[d]); sum_lambda[d+1] += learningRate*lambda[d+1]; }
-           */
-
           for (int d = 0; d < featVal.length - 1; d++) {
-            feat_info = featVal[d].split("[:=]");
-            int featID = Vocabulary.id(feat_info[0]);            
-
+            feat_info = featVal[d].split(":");
+            int featID = Integer.parseInt(feat_info[0]);
             lambda[featID] += learningRate * label * Double.parseDouble(feat_info[1]);
             sum_lambda[featID] += lambda[featID];
           }
         }
         // }//if( featVal[featDim].equals("1") )
       }
-
-      // System.out.printf("(%.2f%%) ",numError*100.0/numPosSamp);
-
       if (numError == 0) break;
     }
 
